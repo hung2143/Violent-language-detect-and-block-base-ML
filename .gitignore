@@ -1,0 +1,56 @@
+.codegraph/
+
+# Documentation and generated report files
+*.doc
+*.docx
+*.pdf
+*.md
+*.html
+*.htm
+
+# Required extension source
+!toxic-guard-extensionv2/popup.html
+
+# Local environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Dependencies
+node_modules/
+
+# Local run output
+*.log
+Backend/out.txt
+Backend/stdout.txt
+Backend/stderr.txt
+
+# Browser extension build/signing artifacts
+*.crx
+*.pem
+
+# Large model and dataset artifacts
+models/
+data/
+*.csv
+*.tsv
+*.parquet
+*.pth
+*.pt
+*.safetensors
+*.onnx
+*.gguf
+*.pkl
+*.joblib
+
+# Unrelated/archive and generated OS files
+CD_Nop/
+__MACOSX/
+.DS_Store
+
+# Local test screenshots
+/test*.png

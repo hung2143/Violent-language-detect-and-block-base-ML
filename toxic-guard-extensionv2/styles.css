@@ -1,0 +1,217 @@
+.toxic-guard-badge {
+  position: absolute;
+  z-index: 999999;
+  min-width: 180px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-family: Arial, sans-serif;
+  font-size: 12px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+  color: #fff;
+  transition: all 0.2s ease;
+  pointer-events: none;
+}
+
+.toxic-guard-badge.hidden {
+  display: none;
+}
+
+.toxic-guard-badge.allow {
+  background: #16a34a;
+}
+
+.toxic-guard-badge.warn {
+  background: #f59e0b;
+}
+
+.toxic-guard-badge.block {
+  background: #ef4444;
+}
+
+.toxic-guard-badge.auto-block {
+  background: #7f1d1d;
+}
+
+.toxic-guard-badge.error {
+  background: #6b7280;
+}
+
+.toxic-guard-badge-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tg-status {
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.tg-meta {
+  font-size: 11px;
+  opacity: 0.95;
+}
+
+.tg-input-blocked {
+  outline: 2px solid #ef4444 !important;
+  background-color: rgba(239, 68, 68, 0.08) !important;
+}
+
+.tg-input-warn {
+  outline: 2px solid #f59e0b !important;
+  background-color: rgba(245, 158, 11, 0.08) !important;
+}
+
+.toxic-guard-global-alert {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 9999999;
+  background: #111827;
+  color: #fff;
+  padding: 14px 18px;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  font-family: Arial, sans-serif;
+  font-size: 14px;
+  transform: translateY(-20px);
+  opacity: 0;
+  transition: all 0.25s ease;
+}
+
+.toxic-guard-global-alert.show {
+  transform: translateY(0);
+  opacity: 1;
+}
+/* == Page content blur ================================ */
+.tg-blur-wrapper {
+  position: relative;
+  display: inline;
+}
+
+.tg-blurred {
+  filter: blur(8px) !important;
+  user-select: none !important;
+  pointer-events: none !important;
+  transition: filter 0.2s ease;
+}
+
+.tg-blur-overlay {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 99999;
+}
+
+.tg-blur-label {
+  font-family: Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: auto;
+  border: 1px solid currentColor;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+.tg-blur-overlay.tg-blur-block .tg-blur-label,
+.tg-blur-overlay.tg-blur-auto-block .tg-blur-label {
+  background: #fee2e2;
+  color: #dc2626;
+  border-color: #ef4444;
+}
+
+.tg-blur-overlay.tg-blur-warn .tg-blur-label {
+  background: #fef9c3;
+  color: #b45309;
+  border-color: #f59e0b;
+}
+
+/* == Page badge (inline after blurred element) */
+.tg-page-badge {
+  all: initial;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content !important;
+  max-width: max-content;
+  font-family: Arial, sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  box-sizing: border-box;
+  cursor: pointer;
+  z-index: 99999;
+  white-space: nowrap;
+  white-space: nowrap;
+  direction: ltr;
+  unicode-bidi: plaintext;
+  writing-mode: horizontal-tb;
+  text-orientation: mixed;
+  transform: none !important;
+  z-index: 2147483646;
+}
+.tg-page-badge-offensive,.tg-page-badge-block {
+  background: #fee2e2; color: #dc2626; border: 1px solid #ef4444;
+}
+.tg-page-badge-hate,.tg-page-badge-auto-block {
+  background: #fce7f3; color: #9d174d; border: 1px solid #ec4899;
+}
+.tg-page-badge-warn {
+  background: #fef9c3; color: #b45309; border: 1px solid #f59e0b;
+}
+
+/* == Card overlay (full container cover) ========= */
+.tg-card-overlay {
+  position: fixed;           /* fixed theo viewport, không bị ảnh hưởng bởi stacking context cha */
+  z-index: 2147483646;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 6px;
+  box-sizing: border-box;
+  pointer-events: auto;
+  overflow: hidden;          /* badge không tràn ra ngoài biên card */
+}
+
+.tg-card-label {
+  font-family: Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  background: #f8fafc;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  white-space: nowrap;
+}
+
+.tg-card-overlay.tg-card-overlay-block,
+.tg-card-overlay.tg-card-overlay-auto-block {
+  background: rgba(239, 68, 68, 0.10);
+}
+
+.tg-card-overlay.tg-card-overlay-warn {
+  background: rgba(245, 158, 11, 0.10);
+}
+
+.tg-card-overlay.tg-card-overlay-block .tg-card-label,
+.tg-card-overlay.tg-card-overlay-auto-block .tg-card-label {
+  background: #fee2e2;
+  color: #dc2626;
+  border-color: #ef4444;
+}
+
+.tg-card-overlay.tg-card-overlay-warn .tg-card-label {
+  background: #fef9c3;
+  color: #b45309;
+  border-color: #f59e0b;
+}
