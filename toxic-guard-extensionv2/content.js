@@ -87,11 +87,11 @@ const ToxicGuard = {
   },
 
   cleanupStalePageState() {
-    document.querySelectorAll(".tg-card-overlay, .tg-page-badge, .tg-blur-overlay, .toxic-guard-badge, .tg-reddit-comment-badge-row").forEach((el) => {
+    document.querySelectorAll(".tg-card-overlay, .tg-page-badge, .tg-blur-overlay, .toxic-guard-badge, .tg-reddit-comment-badge-row, .tg-comment-badge-row").forEach((el) => {
       el.remove();
     });
 
-    document.querySelectorAll(".tg-reddit-comment-block").forEach((el) => {
+    document.querySelectorAll(".tg-reddit-comment-block, .tg-comment-block").forEach((el) => {
       const parent = el.parentElement;
       if (!parent) return;
       while (el.firstChild) parent.insertBefore(el.firstChild, el);
@@ -166,6 +166,9 @@ const ToxicGuard = {
     const observer = new MutationObserver((mutations) => {
       let hasPending = false;
       for (const m of mutations) {
+        if (m.type === "characterData" || m.type === "attributes") {
+          hasPending = true;
+        }
         for (const node of m.addedNodes) {
           if (!(node instanceof HTMLElement)) continue;
           pendingNodes.push(node);
@@ -182,10 +185,17 @@ const ToxicGuard = {
             this.scanInputs(node);
           } catch { /* ignore detached nodes */ }
         }
+        this.reanchorGenericCommentBlocks();
         this.schedulePageScan(300);
       }, 400);
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ["class", "style", "href", "src", "aria-label", "datetime"]
+    });
   },
 
   interceptForms() {
@@ -783,6 +793,8 @@ const ToxicGuard = {
       "ytd-rich-grid-media",
       "ytd-playlist-renderer",
       "ytd-compact-playlist-renderer",
+      // Threads (threads.com / threads.net)
+      "[data-pressable-container='true']",
       // Generic
       "article",
       ".post",
@@ -946,7 +958,7 @@ const ToxicGuard = {
 
   _clearBlurState(el, scopeRoot = null) {
     if (!el) return;
-    if (scopeRoot && el.closest?.("shreddit-comment") !== scopeRoot) return;
+    if (scopeRoot?.matches?.("shreddit-comment") && el.closest?.("shreddit-comment") !== scopeRoot) return;
     el.style.filter = "";
     el.style.pointerEvents = "";
     el.style.userSelect = "";
@@ -958,9 +970,13 @@ const ToxicGuard = {
       "tg-reddit-comment-block",
       "tg-reddit-comment-block-block",
       "tg-reddit-comment-block-auto-block",
-      "tg-reddit-comment-block-warn"
+      "tg-reddit-comment-block-warn",
+      "tg-comment-block",
+      "tg-comment-block-block",
+      "tg-comment-block-auto-block",
+      "tg-comment-block-warn"
     );
-    if (el.parentElement?.classList?.contains("tg-reddit-comment-block")) {
+    if (el.parentElement?.classList?.contains("tg-reddit-comment-block") || el.parentElement?.classList?.contains("tg-comment-block")) {
       const wrapper = el.parentElement;
       const parent = wrapper.parentElement;
       if (parent) {
@@ -969,7 +985,7 @@ const ToxicGuard = {
       }
     }
     el.querySelectorAll?.("[data-tg-blurred], [data-tg-blur], [data-tg-hard-block]").forEach((child) => {
-      if (scopeRoot && child.closest?.("shreddit-comment") !== scopeRoot) return;
+      if (scopeRoot?.matches?.("shreddit-comment") && child.closest?.("shreddit-comment") !== scopeRoot) return;
       child.removeAttribute("data-tg-blur");
       child.removeAttribute("data-tg-blurred");
       child.removeAttribute("data-tg-hard-block");
@@ -982,17 +998,30 @@ const ToxicGuard = {
     if (restoreElement && Array.isArray(entry.metaEls)) {
       entry.metaEls.forEach((metaEl) => this._clearBlurState(metaEl, entry.rootEl));
     }
+    if (restoreElement && Array.isArray(entry.wrapper?.__tgIdentityEls)) {
+      entry.wrapper.__tgIdentityEls.forEach((identityEl) => {
+        if (identityEl.__tgOwnerWrapper === entry.wrapper) {
+          delete identityEl.__tgOwnerWrapper;
+          this._clearBlurState(identityEl);
+        }
+      });
+    }
     if (entry.wrapper) {
-      const parent = entry.wrapper.parentElement;
-      if (parent) {
-        while (entry.wrapper.firstChild) parent.insertBefore(entry.wrapper.firstChild, entry.wrapper);
-      }
-      entry.wrapper.remove();
+      this._unwrapInlineEntry(entry);
     }
     entry.observer?.disconnect?.();
     if (entry.el) this.pageOverlayMap.delete(entry.el);
     if (entry.rootEl) this.pageOverlayRootMap.delete(entry.rootEl);
     if (restoreElement) this._clearBlurState(entry.el, entry.rootEl);
+  },
+
+  _unwrapInlineEntry(entry) {
+    if (!entry?.wrapper) return;
+    const parent = entry.wrapper.parentElement;
+    if (parent) {
+      while (entry.wrapper.firstChild) parent.insertBefore(entry.wrapper.firstChild, entry.wrapper);
+    }
+    entry.wrapper.remove();
   },
 
   _buildBadgeText(result) {
@@ -1162,12 +1191,412 @@ const ToxicGuard = {
     }
   },
 
+  _findGenericCommentGroup(el, rootEl) {
+    const candidates = [];
+    let current = el;
+    const bodyRect = el.getBoundingClientRect();
+    const bodyText = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
+    const bodyPrefix = bodyText.slice(0, Math.min(48, bodyText.length));
+    const hasExternalIdentity = (node) => {
+      try {
+        return Array.from(node.querySelectorAll("img, [role='img'], a[href*='/@'], a[href*='/user'], a[href*='/profile'], time, [datetime], strong, b"))
+          .some((identityEl) => !el.contains(identityEl));
+      } catch {
+        return false;
+      }
+    };
+
+    for (let depth = 0; depth < 12 && current && current !== document.body && current !== document.documentElement; depth++) {
+      const rect = current.getBoundingClientRect();
+      const text = (current.innerText || current.textContent || "").trim();
+      const tag = (current.tagName || "").toUpperCase();
+      const role = current.getAttribute?.("role") || "";
+      const hasIdentity = hasExternalIdentity(current);
+      const bodyIndex = bodyPrefix ? text.replace(/\s+/g, " ").indexOf(bodyPrefix) : -1;
+      const trailingAfterBody = bodyIndex >= 0 ? text.slice(bodyIndex + bodyText.length) : "";
+      const trailingWithoutActions = trailingAfterBody
+        .replace(/\b(Translate|Reply|Share|Like|Author|Trả lời|Chia sẻ)\b/gi, " ")
+        .replace(/[·•]/g, " ")
+        .trim();
+      const hasNestedAfterBody =
+        trailingWithoutActions.length > 24 &&
+        /(?:^|\s)@?[\p{L}\p{N}._-]{2,40}\s+\d{1,2}\/\d{1,2}\/\d{2,4}\b/u.test(trailingWithoutActions);
+      const hasHeaderBeforeBody =
+        bodyIndex > 0 &&
+        bodyIndex <= 140 &&
+        text.length <= Math.max(120, bodyText.length + 260);
+      const hasActions = !!current.querySelector?.(
+        "button, [role='button'], svg, [aria-label*='reply' i], [aria-label*='like' i], [aria-label*='share' i]"
+      );
+      const isSemanticCard =
+        tag === "ARTICLE" ||
+        role === "article" ||
+        current.matches?.(".comment, .comment-container, [data-testid='tweet'], [data-testid='cellInnerDiv'], [data-pressable-container='true']");
+      const reasonable =
+        rect.width >= 180 &&
+        rect.height >= 48 &&
+        rect.height <= Math.max(560, window.innerHeight * 0.85) &&
+        rect.top <= bodyRect.top + 8 &&
+        rect.bottom >= bodyRect.bottom - 8 &&
+        text.length >= 4 &&
+        text.length <= 1200;
+
+      if (reasonable && !hasNestedAfterBody && (isSemanticCard || hasIdentity || hasActions || hasHeaderBeforeBody)) {
+        const compactScore = Math.max(0, 35 - rect.height / 12);
+        candidates.push({
+          el: current,
+          score:
+            (hasHeaderBeforeBody ? 140 : 0) +
+            (hasIdentity ? 100 : 0) +
+            (isSemanticCard ? 40 : 0) +
+            (hasActions ? 15 : 0) +
+            compactScore -
+            depth * 0.25
+        });
+      }
+
+      if (rootEl && current === rootEl) break;
+      current = current.parentElement;
+    }
+
+    if (!candidates.length) {
+      let siblingParent = el.parentElement;
+      for (let depth = 0; depth < 6 && siblingParent && siblingParent !== document.body && siblingParent !== document.documentElement; depth++) {
+        const siblings = Array.from(siblingParent.children || []);
+        const bodyIndex = siblings.findIndex((child) => child === el || child.contains(el));
+        if (bodyIndex > 0) {
+          const previousSiblings = siblings.slice(Math.max(0, bodyIndex - 3), bodyIndex);
+          const hasNearbyIdentity = previousSiblings.some((node) => hasExternalIdentity(node));
+          if (hasNearbyIdentity) {
+            const r = siblingParent.getBoundingClientRect();
+            if (r.width >= 180 && r.height >= 48 && r.height <= Math.max(560, window.innerHeight * 0.85)) {
+              candidates.push({ el: siblingParent, score: 130 + Math.min(35, r.height / 10) });
+              break;
+            }
+          }
+        }
+        siblingParent = siblingParent.parentElement;
+      }
+    }
+
+    const rootCandidate = rootEl && rootEl !== el ? rootEl : null;
+    if (rootCandidate) {
+      const r = rootCandidate.getBoundingClientRect();
+      if (
+        document.body.contains(rootCandidate) &&
+        r.width >= 180 &&
+        r.height >= 48 &&
+        r.height <= Math.max(560, window.innerHeight * 0.85) &&
+        r.top <= bodyRect.top + 8 &&
+        r.bottom >= bodyRect.bottom - 8
+      ) {
+        candidates.push({
+          el: rootCandidate,
+          score: (hasExternalIdentity(rootCandidate) ? 120 : 20) + Math.min(35, r.height / 10)
+        });
+      }
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0]?.el || null;
+  },
+
+  _applyGenericInlineBlur(groupEl, bodyEl, result) {
+    const action = result?.action || "BLOCK";
+    const label = result?.label_name || "TOXIC";
+    const isHardBlock = action === "AUTO_BLOCK" || label === "HATE";
+
+    groupEl.dataset.tgBlurred = "1";
+    groupEl.dataset.tgScanned = "1";
+    groupEl.style.filter = "blur(8px)";
+    groupEl.style.pointerEvents = "none";
+    groupEl.style.userSelect = "none";
+    groupEl.style.transition = "filter 0.3s ease";
+    groupEl.style.cursor = "default";
+    groupEl.setAttribute("data-tg-blur", action);
+    groupEl.setAttribute("data-tg-hard-block", isHardBlock ? "1" : "0");
+    bodyEl.dataset.tgBlurred = "1";
+    bodyEl.dataset.tgScanned = "1";
+  },
+
+  _findNearbyIdentityElements(bodyEl) {
+    const bodyRect = bodyEl.getBoundingClientRect();
+    const roots = [];
+    let current = bodyEl.parentElement;
+    for (let depth = 0; depth < 8 && current && current !== document.body && current !== document.documentElement; depth++) {
+      roots.push(current);
+      current = current.parentElement;
+    }
+
+    const searchRoot = roots.find((node) => {
+      const r = node.getBoundingClientRect();
+      return (
+        r.width >= Math.max(180, bodyRect.width * 0.75) &&
+        r.height >= bodyRect.height &&
+        r.height <= Math.max(720, window.innerHeight * 0.9) &&
+        r.top <= bodyRect.top + 24 &&
+        r.bottom >= bodyRect.bottom - 8
+      );
+    }) || bodyEl.closest?.("article, [role='article'], main, section") || bodyEl.parentElement;
+    if (!searchRoot) return [];
+
+    const selector = [
+      "img",
+      "[role='img']",
+      "a",
+      "time",
+      "[datetime]",
+      "strong",
+      "b",
+      "span",
+      "div"
+    ].join(",");
+
+    const isIdentityLike = (node) => {
+      const text = (node.innerText || node.textContent || "").trim().replace(/\s+/g, " ");
+      if (node.matches?.("img,[role='img']")) return true;
+      if (node.matches?.("time,[datetime]")) return true;
+      if (!text || text.length > 90) return false;
+      if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(text)) return true;
+      if (/^\d+\s*(ngày|giờ|phút|day|days|h|m)\b/i.test(text)) return true;
+      if (/^@?[\p{L}\p{N}._-]{2,40}$/u.test(text)) return true;
+      return node.matches?.("a,strong,b") && text.length <= 60;
+    };
+
+    const addCompactAncestors = (set, node) => {
+      let parent = node.parentElement;
+      for (let depth = 0; depth < 4 && parent && parent !== searchRoot && parent !== document.body; depth++) {
+        if (parent.contains(bodyEl) || parent.closest?.("[data-tg-overlay]")) break;
+        const r = parent.getBoundingClientRect();
+        if (
+          r.width > 0 &&
+          r.height > 0 &&
+          r.height <= 96 &&
+          r.width <= Math.max(520, bodyRect.width * 0.85) &&
+          r.bottom >= bodyRect.top - 130 &&
+          r.top <= bodyRect.top + 24 &&
+          r.right >= bodyRect.left - 160 &&
+          r.left <= bodyRect.left + 360
+        ) {
+          set.add(parent);
+          parent = parent.parentElement;
+          continue;
+        }
+        break;
+      }
+    };
+
+    try {
+      const found = new Set();
+      Array.from(searchRoot.querySelectorAll(selector)).forEach((node) => {
+        if (!(node instanceof HTMLElement)) return;
+        if (bodyEl.contains(node) || node.contains(bodyEl) || node.closest?.("[data-tg-overlay]")) return;
+        if (!isIdentityLike(node)) return;
+
+        const r = node.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return;
+
+        const isNearVertically = r.bottom >= bodyRect.top - 130 && r.top <= bodyRect.top + 28;
+        const isNearHorizontally =
+          r.right >= bodyRect.left - 160 &&
+          r.left <= Math.min(bodyRect.right + 32, bodyRect.left + 380);
+        if (!isNearVertically || !isNearHorizontally) return;
+
+        found.add(node);
+        addCompactAncestors(found, node);
+      });
+
+      return Array.from(found).sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        return ar.top - br.top || ar.left - br.left;
+      });
+    } catch {
+      return [];
+    }
+  },
+
+  _expandGenericWrapperToNearbyIdentity(wrapper, bodyEl) {
+    // Only expand to cover identity elements OUTSIDE the wrapper.
+    // Elements already inside wrapper are already blurred via the group blur.
+    const identityEls = this._findNearbyIdentityElements(bodyEl)
+      .filter(el => !wrapper.contains(el));
+    if (!identityEls.length) return;
+
+    const nextIdentitySet = new Set(identityEls);
+    if (Array.isArray(wrapper.__tgIdentityEls)) {
+      wrapper.__tgIdentityEls.forEach((node) => {
+        if (!nextIdentitySet.has(node) && node.__tgOwnerWrapper === wrapper) {
+          delete node.__tgOwnerWrapper;
+          this._clearBlurState(node);
+        }
+      });
+    }
+
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const bodyRect = bodyEl.getBoundingClientRect();
+    const union = identityEls.reduce((acc, node) => {
+      const r = node.getBoundingClientRect();
+      acc.top = Math.min(acc.top, r.top);
+      acc.left = Math.min(acc.left, r.left);
+      acc.right = Math.max(acc.right, r.right);
+      acc.bottom = Math.max(acc.bottom, r.bottom);
+      return acc;
+    }, {
+      top: wrapperRect.top,
+      left: wrapperRect.left,
+      right: wrapperRect.right,
+      bottom: wrapperRect.bottom
+    });
+
+    const extraTop = Math.max(0, wrapperRect.top - union.top + 8);
+    const extraLeft = Math.max(0, wrapperRect.left - union.left + 8);
+    const extraRight = Math.max(0, union.right - wrapperRect.right + 8);
+
+    wrapper.style.position = "relative";
+    wrapper.style.zIndex = "1";
+    if (wrapper.parentElement) wrapper.parentElement.style.overflow = "visible";
+    wrapper.style.marginTop = `-${extraTop}px`;
+    wrapper.style.paddingTop = `${8 + extraTop}px`;
+    wrapper.style.marginLeft = `-${extraLeft}px`;
+    wrapper.style.paddingLeft = `${8 + extraLeft}px`;
+    wrapper.style.width = `${Math.max(wrapperRect.width + extraLeft + extraRight, bodyRect.width + extraLeft)}px`;
+    wrapper.style.minHeight = `${Math.max(wrapperRect.height + extraTop, bodyRect.height + extraTop + 16)}px`;
+    wrapper.dataset.tgIdentityCount = String(identityEls.length);
+    wrapper.dataset.tgExpandedTop = String(Math.round(extraTop));
+    wrapper.dataset.tgExpandedLeft = String(Math.round(extraLeft));
+
+    identityEls.forEach((node) => {
+      node.dataset.tgBlurred = "1";
+      node.style.filter = "blur(8px)";
+      node.style.pointerEvents = "none";
+      node.style.userSelect = "none";
+      node.style.transition = "filter 0.3s ease";
+      node.setAttribute("data-tg-blur", bodyEl.getAttribute("data-tg-blur") || "BLOCK");
+      node.setAttribute("data-tg-hard-block", bodyEl.getAttribute("data-tg-hard-block") || "0");
+      node.__tgOwnerWrapper = wrapper;
+    });
+    wrapper.__tgIdentityEls = identityEls;
+  },
+
+  reanchorGenericCommentBlocks() {
+    document.querySelectorAll(".tg-comment-block").forEach((wrapper) => {
+      const bodyEl = wrapper.__tgBodyEl;
+      if (!bodyEl || !document.body.contains(bodyEl)) return;
+
+      const currentGroup = wrapper.__tgGroupEl;
+      const nextGroup = this._findGenericCommentGroup(bodyEl, currentGroup);
+      if (!nextGroup || nextGroup === currentGroup || wrapper.contains(nextGroup)) {
+        this._expandGenericWrapperToNearbyIdentity(wrapper, bodyEl);
+        return;
+      }
+
+      const parent = wrapper.parentElement;
+      if (!parent) return;
+
+      while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, wrapper);
+      nextGroup.parentElement?.insertBefore(wrapper, nextGroup);
+      wrapper.appendChild(nextGroup);
+
+      const row = wrapper.querySelector(".tg-comment-badge-row");
+      if (row) wrapper.insertBefore(row, nextGroup);
+      wrapper.__tgGroupEl = nextGroup;
+
+      const action = bodyEl.getAttribute("data-tg-blur") || "BLOCK";
+      const actionClass = action.toLowerCase().replace("_", "-");
+      const label = bodyEl.getAttribute("data-tg-hard-block") === "1" ? "HATE" : "TOXIC";
+      wrapper.classList.remove("tg-comment-block-block", "tg-comment-block-auto-block", "tg-comment-block-warn");
+      wrapper.classList.add(`tg-comment-block-${actionClass}`);
+      this._applyGenericInlineBlur(nextGroup, bodyEl, { action, label_name: label });
+      this._expandGenericWrapperToNearbyIdentity(wrapper, bodyEl);
+    });
+  },
+
+  blurGenericCommentElement(el, result, rootEl = null) {
+    const groupEl = this._findGenericCommentGroup(el, rootEl);
+    if (!groupEl || groupEl.matches?.("shreddit-comment")) return false;
+    if (groupEl.closest?.(".tg-comment-block, .tg-reddit-comment-block")) return false;
+
+    const overlayRoot = groupEl;
+    const severity = this._getOverlaySeverity(result);
+    const action = result.action || "BLOCK";
+    const label = result.label_name || "TOXIC";
+    const actionClass = action.toLowerCase().replace("_", "-");
+    const isHardBlock = action === "AUTO_BLOCK" || label === "HATE";
+    const existingEntry = this.pageOverlayRootMap.get(overlayRoot);
+
+    if (existingEntry) {
+      if ((existingEntry.severity || 0) >= severity) return true;
+      existingEntry.overlay.className = `tg-comment-badge-row tg-comment-badge-row-${actionClass}`;
+      existingEntry.overlay.querySelector(".tg-comment-badge").textContent = this._buildBadgeText(result);
+      existingEntry.wrapper.className = `tg-comment-block tg-comment-block-${actionClass}`;
+      if (isHardBlock) existingEntry.wrapper.classList.add("tg-comment-hard-block");
+      existingEntry.severity = severity;
+      existingEntry.wrapper.__tgBodyEl = existingEntry.el || el;
+      existingEntry.wrapper.__tgGroupEl = existingEntry.wrapper.querySelector(":scope > :not(.tg-comment-badge-row)") || existingEntry.wrapper;
+      this._applyGenericInlineBlur(existingEntry.wrapper, existingEntry.el || el, result);
+      this._expandGenericWrapperToNearbyIdentity(existingEntry.wrapper, existingEntry.el || el);
+      return true;
+    }
+
+    const wrapper = document.createElement("div");
+    wrapper.className = `tg-comment-block tg-comment-block-${actionClass}`;
+    if (isHardBlock) wrapper.classList.add("tg-comment-hard-block");
+    wrapper.dataset.tgOverlay = "1";
+    wrapper.dataset.tgSourceText = (el.innerText || el.textContent || "").trim().slice(0, 160);
+    wrapper.dataset.tgRootTag = groupEl.tagName || "";
+    wrapper.dataset.tgRootId = groupEl.id || "";
+    wrapper.__tgBodyEl = el;
+    wrapper.__tgGroupEl = groupEl;
+
+    const parent = groupEl.parentElement;
+    if (!parent) return false;
+    parent.insertBefore(wrapper, groupEl);
+    wrapper.appendChild(groupEl);
+
+    const row = document.createElement("div");
+    row.className = `tg-comment-badge-row tg-comment-badge-row-${actionClass}`;
+    row.setAttribute("data-tg-overlay", "1");
+    row.dataset.tgSourceText = wrapper.dataset.tgSourceText;
+    row.dataset.tgRootTag = wrapper.dataset.tgRootTag;
+    row.dataset.tgRootId = wrapper.dataset.tgRootId;
+
+    const badge = document.createElement("span");
+    badge.className = "tg-comment-badge";
+    badge.textContent = this._buildBadgeText(result);
+    row.appendChild(badge);
+    wrapper.insertBefore(row, groupEl);
+
+    this._applyGenericInlineBlur(groupEl, el, result);
+    this._expandGenericWrapperToNearbyIdentity(wrapper, el);
+
+    const entry = { overlay: row, observer: null, el, rootEl: overlayRoot, severity, inline: true, wrapper };
+    this.pageOverlayRootMap.set(overlayRoot, entry);
+    [120, 300, 700, 1200, 2200, 3600].forEach((delay) => {
+      setTimeout(() => this.reanchorGenericCommentBlocks(), delay);
+    });
+
+    if (!isHardBlock) {
+      const reveal = (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this._removePageOverlayEntry(entry, true);
+      };
+      wrapper.style.cursor = "pointer";
+      wrapper.title = "Click to reveal this offensive comment";
+      wrapper.addEventListener("click", reveal, { once: true, capture: true });
+    }
+
+    return true;
+  },
+
   blurElement(el, result, rootEl = null) {
     const overlayRoot = rootEl || this._findSemanticRoot(el) || el;
     if (overlayRoot?.matches?.("shreddit-comment")) {
       this.blurRedditCommentElement(el, result, overlayRoot);
       return;
     }
+    if (this.blurGenericCommentElement(el, result, overlayRoot)) return;
 
     const severity = this._getOverlaySeverity(result);
     const action = result.action || "BLOCK";
