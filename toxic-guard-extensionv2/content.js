@@ -185,6 +185,7 @@ const ToxicGuard = {
             this.scanInputs(node);
           } catch { /* ignore detached nodes */ }
         }
+        this.reconcileBlurState();
         this.reanchorGenericCommentBlocks();
         this.schedulePageScan(300);
       }, 400);
@@ -371,6 +372,7 @@ const ToxicGuard = {
   // ─── Page content scan ────────────────────────────────────────────────────
   async scanPageContent(root = document.body) {
     if (!root || !this._enabled) return;
+    this.reconcileBlurState();
 
     const SKIP_TAGS = new Set([
       "SCRIPT", "STYLE", "NOSCRIPT", "INPUT", "TEXTAREA",
@@ -1031,6 +1033,79 @@ const ToxicGuard = {
     return isHardBlock ? `${label} (BLOCKED)` : label;
   },
 
+  _setInlineWrapperState(wrapper, variant, result) {
+    if (!wrapper) return;
+    const action = result?.action || "BLOCK";
+    const label = result?.label_name || "TOXIC";
+    const actionClass = action.toLowerCase().replace("_", "-");
+    const isHardBlock = action === "AUTO_BLOCK" || label === "HATE";
+    wrapper.dataset.tgInlineVariant = variant;
+    wrapper.dataset.tgAction = action;
+    wrapper.dataset.tgActionClass = actionClass;
+    wrapper.dataset.tgBadgeText = this._buildBadgeText(result);
+    wrapper.dataset.tgHardBlock = isHardBlock ? "1" : "0";
+  },
+
+  _ensureInlineBadgeRow(wrapper) {
+    if (!wrapper?.isConnected) return;
+
+    const variant = wrapper.dataset.tgInlineVariant || (
+      wrapper.classList.contains("tg-reddit-comment-block") ? "reddit" : "generic"
+    );
+    const rowClass = variant === "reddit" ? "tg-reddit-comment-badge-row" : "tg-comment-badge-row";
+    const badgeClass = variant === "reddit" ? "tg-reddit-comment-badge" : "tg-comment-badge";
+
+    if (wrapper.querySelector(`:scope > .${rowClass}`)) return;
+
+    const actionClass = wrapper.dataset.tgActionClass || "block";
+    const badgeText = wrapper.dataset.tgBadgeText || this._buildBadgeText({
+      action: wrapper.dataset.tgAction || "BLOCK",
+      label_name: wrapper.dataset.tgHardBlock === "1" ? "HATE" : "TOXIC"
+    });
+
+    const row = document.createElement("div");
+    row.className = `${rowClass} ${rowClass}-${actionClass}`;
+    row.setAttribute("data-tg-overlay", "1");
+    if (wrapper.dataset.tgSourceText) row.dataset.tgSourceText = wrapper.dataset.tgSourceText;
+    if (wrapper.dataset.tgRootTag) row.dataset.tgRootTag = wrapper.dataset.tgRootTag;
+    if (wrapper.dataset.tgRootId) row.dataset.tgRootId = wrapper.dataset.tgRootId;
+
+    const badge = document.createElement("span");
+    badge.className = badgeClass;
+    badge.textContent = badgeText;
+    row.appendChild(badge);
+
+    wrapper.insertBefore(row, wrapper.firstChild);
+  },
+
+  _hasLiveCardOverlay(el) {
+    const entry = this.pageOverlayMap.get(el);
+    return !!(entry?.overlay?.isConnected && document.body.contains(el));
+  },
+
+  reconcileBlurState() {
+    document.querySelectorAll(".tg-reddit-comment-block, .tg-comment-block").forEach((wrapper) => {
+      this._ensureInlineBadgeRow(wrapper);
+    });
+
+    document.querySelectorAll("[data-tg-blur]").forEach((el) => {
+      const hasBlurredAncestor = !!el.parentElement?.closest?.("[data-tg-blur]");
+      if (hasBlurredAncestor) return;
+
+      const inlineWrapper = el.closest(".tg-reddit-comment-block, .tg-comment-block");
+      if (inlineWrapper) {
+        this._ensureInlineBadgeRow(inlineWrapper);
+        return;
+      }
+
+      if (el.__tgOwnerWrapper?.isConnected) return;
+      if (this._hasLiveCardOverlay(el)) return;
+
+      const scopeRoot = el.closest?.("shreddit-comment") || null;
+      this._clearBlurState(el, scopeRoot);
+    });
+  },
+
   _applyBlurState(el, result) {
     const action = result?.action || "BLOCK";
     const label = result?.label_name || "TOXIC";
@@ -1125,6 +1200,7 @@ const ToxicGuard = {
       existingEntry.overlay.className = `tg-reddit-comment-badge-row tg-reddit-comment-badge-row-${actionClass}`;
       existingEntry.overlay.querySelector(".tg-reddit-comment-badge").textContent = this._buildBadgeText(result);
       existingEntry.severity = severity;
+      this._setInlineWrapperState(existingEntry.wrapper, "reddit", result);
       this._applyBlurState(existingEntry.el || el, result);
       this._applyRedditCommentMetaBlur(overlayRoot, result);
       return;
@@ -1139,6 +1215,7 @@ const ToxicGuard = {
     wrapper.dataset.tgSourceText = (el.innerText || el.textContent || "").trim().slice(0, 160);
     wrapper.dataset.tgRootTag = overlayRoot.tagName || "";
     wrapper.dataset.tgRootId = overlayRoot.id || "";
+    this._setInlineWrapperState(wrapper, "reddit", result);
     if (!this._wrapRedditCommentParts(wrapper, el, overlayRoot)) {
       el.parentElement?.insertBefore(wrapper, el);
       wrapper.appendChild(el);
@@ -1532,6 +1609,7 @@ const ToxicGuard = {
       existingEntry.wrapper.className = `tg-comment-block tg-comment-block-${actionClass}`;
       if (isHardBlock) existingEntry.wrapper.classList.add("tg-comment-hard-block");
       existingEntry.severity = severity;
+      this._setInlineWrapperState(existingEntry.wrapper, "generic", result);
       existingEntry.wrapper.__tgBodyEl = existingEntry.el || el;
       existingEntry.wrapper.__tgGroupEl = existingEntry.wrapper.querySelector(":scope > :not(.tg-comment-badge-row)") || existingEntry.wrapper;
       this._applyGenericInlineBlur(existingEntry.wrapper, existingEntry.el || el, result);
@@ -1548,6 +1626,7 @@ const ToxicGuard = {
     wrapper.dataset.tgRootId = groupEl.id || "";
     wrapper.__tgBodyEl = el;
     wrapper.__tgGroupEl = groupEl;
+    this._setInlineWrapperState(wrapper, "generic", result);
 
     const parent = groupEl.parentElement;
     if (!parent) return false;
