@@ -173,7 +173,7 @@
   position: fixed;           /* fixed theo viewport, không bị ảnh hưởng bởi stacking context cha */
   z-index: 2147483646;
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: flex-start;
   padding: 6px;
   box-sizing: border-box;
@@ -214,4 +214,84 @@
   background: #fef9c3;
   color: #b45309;
   border-color: #f59e0b;
+}
+
+/* == Reddit comment badge (inline, anchored to comment body) ========= */
+.tg-reddit-comment-badge-row {
+  all: initial;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  margin: 0 0 8px 0;
+  min-height: 18px;
+  font-family: Arial, sans-serif;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.tg-reddit-comment-block {
+  display: block !important;
+  box-sizing: border-box !important;
+  margin: 4px 0 6px 0 !important;
+  padding: 8px !important;
+  min-height: 52px !important;
+  overflow: hidden !important;
+  border-radius: 0 !important;
+}
+
+.tg-reddit-comment-badge {
+  all: initial;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  max-width: max-content;
+  box-sizing: border-box;
+  font-family: Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+  cursor: pointer;
+}
+
+.tg-reddit-comment-badge-row-block .tg-reddit-comment-badge,
+.tg-reddit-comment-badge-row-auto-block .tg-reddit-comment-badge {
+  background: #fee2e2;
+  color: #dc2626;
+  border-color: #ef4444;
+}
+
+.tg-reddit-comment-block-block,
+.tg-reddit-comment-block-auto-block {
+  background: rgba(239, 68, 68, 0.10) !important;
+}
+
+.tg-reddit-comment-badge-row-warn .tg-reddit-comment-badge {
+  background: #fef9c3;
+  color: #b45309;
+  border-color: #f59e0b;
+}
+
+.tg-reddit-comment-block-warn {
+  background: rgba(245, 158, 11, 0.10) !important;
+}
+
+.tg-reddit-comment-block-warn,
+.tg-reddit-comment-block-block {
+  cursor: pointer !important;
+}
+
+.tg-reddit-comment-block-auto-block {
+  cursor: default !important;
+}
+
+.tg-reddit-comment-hard-block,
+.tg-reddit-comment-hard-block .tg-reddit-comment-badge {
+  cursor: default !important;
 }
