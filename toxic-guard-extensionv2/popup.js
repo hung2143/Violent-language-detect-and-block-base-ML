@@ -1,162 +1,245 @@
-// ─── Giao tiếp với background ─────────────────────────────────────────────
+const CHECK_BUTTON_HTML = `
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="11" cy="11" r="7.5" stroke="currentColor" stroke-width="2"></circle>
+    <path d="M20 20L16.8 16.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+  </svg>
+  <span>Phân tích</span>
+`;
+
+const ACTION_META = {
+  ALLOW: { box: "result-allow", badge: "badge-allow", badgeText: "An toàn", title: "Có thể tiếp tục sử dụng nội dung này." },
+  WARN: { box: "result-warn", badge: "badge-warn", badgeText: "Cảnh báo", title: "Nội dung có dấu hiệu nhạy cảm, nên xem lại trước khi dùng." },
+  BLOCK: { box: "result-block", badge: "badge-block", badgeText: "Độc hại", title: "Nội dung bị xem là độc hại và nên được chỉnh sửa." },
+  AUTO_BLOCK: { box: "result-block", badge: "badge-auto-block", badgeText: "Tự chặn", title: "Nội dung vượt ngưỡng và sẽ bị chặn tự động." },
+  ERROR: { box: "result-error", badge: "badge-error", badgeText: "Lỗi", title: "Không thể lấy kết quả từ API ở thời điểm hiện tại." }
+};
+
 function msg(payload) {
   return new Promise((resolve) => chrome.runtime.sendMessage(payload, resolve));
 }
 
-// ─── Toast ─────────────────────────────────────────────────────────────────
-function toast(text, ok = true) {
-  const el = document.getElementById("saveToast");
-  el.textContent = text;
-  el.style.background   = ok ? "#166534" : "#7f1d1d";
-  el.style.color        = ok ? "#4ade80"  : "#fca5a5";
-  el.style.border       = ok ? "1px solid #22c55e55" : "1px solid #ef444455";
-  el.classList.add("show");
-  setTimeout(() => el.classList.remove("show"), 1800);
+function $(id) {
+  return document.getElementById(id);
 }
 
-// ─── Trạng thái enable ────────────────────────────────────────────────────
-function applyEnabled(enabled) {
-  const st   = document.getElementById("statusText");
-  const bar  = document.getElementById("statusBar");
-  const dot  = document.getElementById("statusDot");
-  const btxt = document.getElementById("statusBarText");
-  if (enabled) {
-    st.textContent = "Bật"; st.className = "status-text on";
-    bar.className = "status-bar active"; dot.className = "status-dot on";
-    btxt.textContent = "Extension đang hoạt động";
-  } else {
-    st.textContent = "Tắt"; st.className = "status-text off";
-    bar.className = "status-bar inactive"; dot.className = "status-dot";
-    btxt.textContent = "Extension đã tắt";
+function toast(text, ok = true) {
+  const el = $("saveToast");
+  el.textContent = text;
+  el.style.background = ok ? "#166534" : "#b91c1c";
+  el.classList.add("show");
+  window.setTimeout(() => el.classList.remove("show"), 1800);
+}
+
+function cap(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function parseWhitelist(rawValue) {
+  return rawValue
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatWhitelistCount(value) {
+  return `${value} website`;
+}
+
+function formatApiHost(url) {
+  if (!url) return "Chưa cấu hình";
+  try {
+    new URL(url);
+    return "Sẵn sàng";
+  } catch {
+    return "Cần kiểm tra";
   }
 }
 
-// ─── Kết quả phân tích ────────────────────────────────────────────────────
+function updateApiSummary(url) {
+  const status = formatApiHost(url);
+  const isValid = status === "Sẵn sàng";
+  const stateCard = $("apiStateText").closest(".overview-card");
+  const stateDot = $("apiStateDot");
+  const stateLabel = $("apiStateLabel");
+
+  stateLabel.textContent = status;
+  stateCard.classList.toggle("api-ready", isValid);
+  stateCard.classList.toggle("api-warning", !isValid);
+  stateDot.classList.toggle("live", isValid);
+  stateDot.classList.toggle("warn", !isValid);
+  $("apiHealthBadge").textContent = status;
+  $("apiHealthBadge").classList.toggle("invalid", !isValid);
+}
+
+function updateWhitelistSummary(rawValue) {
+  const whitelist = parseWhitelist(rawValue);
+  const label = formatWhitelistCount(whitelist.length);
+  $("whitelistCountText").textContent = label;
+  $("whitelistCountInline").textContent = label;
+}
+
+function updateDetectionSummary(realtimeScan, submitScan) {
+  const enabledCount = [realtimeScan, submitScan].filter(Boolean).length;
+  $("modeCountText").textContent = `${enabledCount}/2 bật`;
+
+  let text = "Chưa bật lớp bảo vệ nào.";
+  if (realtimeScan && submitScan) {
+    text = "Đang dùng đầy đủ cả hai lớp bảo vệ.";
+  } else if (realtimeScan) {
+    text = "Đang chỉ quét trong lúc nhập nội dung.";
+  } else if (submitScan) {
+    text = "Đang chỉ kiểm tra trước khi gửi form.";
+  }
+
+  $("detectionSummaryText").textContent = text;
+}
+
+function applyEnabled(enabled) {
+  const statusText = $("statusText");
+  const statusBarText = $("statusBarText");
+
+  statusText.textContent = enabled ? "Đang bật" : "Đang tắt";
+  statusText.className = enabled ? "status-pill" : "status-pill off";
+  statusBarText.textContent = enabled
+    ? "Extension đang hoạt động và sẽ quét nội dung theo cấu hình hiện tại."
+    : "Extension đang tắt. Mọi thao tác quét và chặn sẽ tạm dừng.";
+}
+
 function applyResult(action, label, target) {
-  const box     = document.getElementById("resultBox");
-  const badge   = document.getElementById("resultBadge");
-  const actEl   = document.getElementById("resultAction");
-  const labelEl = document.getElementById("resultLabel");
-  const tgtEl   = document.getElementById("resultTarget");
-  const empty   = document.getElementById("resultEmpty");
-  const content = document.getElementById("resultContent");
+  const box = $("resultBox");
+  const badge = $("resultBadge");
+  const actionEl = $("resultAction");
+  const labelEl = $("resultLabel");
+  const targetEl = $("resultTarget");
+  const empty = $("resultEmpty");
+  const content = $("resultContent");
+
+  const meta = ACTION_META[action] || ACTION_META.ERROR;
 
   box.className = "result-box";
   badge.className = "result-badge";
+  box.classList.add(meta.box);
+  badge.classList.add(meta.badge);
 
-  const MAP = {
-    "ALLOW":      { box: "result-allow",  badge: "badge-allow",       label: "AN TOÀN"  },
-    "WARN":       { box: "result-warn",   badge: "badge-warn",        label: "CẢNH BÁO" },
-    "BLOCK":      { box: "result-block",  badge: "badge-block",       label: "ĐỘC HẠI"  },
-    "AUTO_BLOCK": { box: "result-block",  badge: "badge-auto-block",  label: "TỰ CHẶN"  },
-    "ERROR":      { box: "result-error",  badge: "badge-error",       label: "LỖI"      },
-  };
-  const m = MAP[action] || { box: "", badge: "", label: action || "—" };
+  badge.textContent = meta.badgeText;
+  actionEl.textContent = meta.title;
+  labelEl.textContent = label || "-";
+  targetEl.textContent = target || "-";
 
-  if (m.box) box.classList.add(m.box);
-  badge.classList.add(m.badge || "");
-  badge.textContent  = m.label;
-  actEl.textContent  = action || "—";
-  labelEl.textContent = label  || "—";
-  tgtEl.textContent  = target  || "—";
-
-  empty.style.display   = "none";
+  empty.style.display = "none";
   content.classList.remove("hidden");
 }
 
-// ─── Tab switching ────────────────────────────────────────────────────────
+function fillWhitelist(whitelist) {
+  $("whitelist").value = Array.isArray(whitelist) ? whitelist.join("\n") : "";
+  updateWhitelistSummary($("whitelist").value);
+}
+
 function initTabs() {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+      document.querySelectorAll(".tab").forEach((button) => {
+        button.classList.remove("active");
+        button.setAttribute("aria-selected", "false");
+      });
+      document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.remove("active"));
       tab.classList.add("active");
-      document.getElementById("panel" + cap(tab.dataset.tab)).classList.add("active");
+      tab.setAttribute("aria-selected", "true");
+      $(`panel${cap(tab.dataset.tab)}`).classList.add("active");
     });
   });
 }
-function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
-// ─── Main ─────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
 
-  // Đọc tất cả settings một lần
-  const s = await msg({ type: "GET_SETTINGS" });
+  const settings = await msg({ type: "GET_SETTINGS" });
 
-  // --- Tab Chung ---
-  const enabledToggle = document.getElementById("enabledToggle");
-  const apiUrlInput   = document.getElementById("apiUrl");
-  const apiUrlHint    = document.getElementById("apiUrlHint");
-  const whitelistInput = document.getElementById("whitelist");
+  const enabledToggle = $("enabledToggle");
+  const realtimeScanInput = $("realtimeScan");
+  const submitScanInput = $("submitScan");
+  const whitelistInput = $("whitelist");
+  const quickTextInput = $("quickText");
+  const checkBtn = $("checkBtn");
 
-  enabledToggle.checked = s.enabled;
-  applyEnabled(s.enabled);
-  apiUrlInput.value = s.apiUrl || "http://127.0.0.1:8000/predict";
-  whitelistInput.value = Array.isArray(s.whitelist) ? s.whitelist.join(", ") : "";
+  enabledToggle.checked = settings.enabled;
+  realtimeScanInput.checked = settings.realtimeScan ?? true;
+  submitScanInput.checked = settings.submitScan ?? true;
+  fillWhitelist(settings.whitelist);
 
-  // Toggle bật/tắt
+  applyEnabled(settings.enabled);
+  updateApiSummary(settings.apiUrl || "");
+  updateDetectionSummary(realtimeScanInput.checked, submitScanInput.checked);
+  $("quickTextCount").textContent = `${quickTextInput.value.length} ký tự`;
+
   enabledToggle.addEventListener("change", async () => {
     const enabled = enabledToggle.checked;
     await msg({ type: "SET_SETTINGS", payload: { enabled } });
     applyEnabled(enabled);
+    toast(enabled ? "Đã bật bảo vệ" : "Đã tắt bảo vệ");
   });
 
-  // Lưu API URL với kiểm tra schema
-  document.getElementById("saveApiBtn").addEventListener("click", async () => {
-    const url = apiUrlInput.value.trim();
-    if (!url) { apiUrlHint.textContent = "URL không được để trống."; apiUrlHint.className = "field-hint error"; return; }
-    const res = await msg({ type: "SET_SETTINGS", payload: { apiUrl: url } });
-    if (!res?.ok) {
-      apiUrlHint.textContent = res?.error || "URL không hợp lệ.";
-      apiUrlHint.className = "field-hint error";
-    } else {
-      apiUrlHint.textContent = "";
-      apiUrlHint.className = "field-hint";
-      toast("✓ Đã lưu API URL");
-    }
+  realtimeScanInput.addEventListener("change", () => {
+    updateDetectionSummary(realtimeScanInput.checked, submitScanInput.checked);
   });
 
-  // Lưu whitelist
-  document.getElementById("saveWhitelistBtn").addEventListener("click", async () => {
-    const raw = whitelistInput.value.trim();
-    const whitelist = raw ? raw.split(",").map(x => x.trim()).filter(Boolean) : [];
+  submitScanInput.addEventListener("change", () => {
+    updateDetectionSummary(realtimeScanInput.checked, submitScanInput.checked);
+  });
+
+  whitelistInput.addEventListener("input", () => {
+    updateWhitelistSummary(whitelistInput.value);
+  });
+
+  quickTextInput.addEventListener("input", () => {
+    $("quickTextCount").textContent = `${quickTextInput.value.length} ký tự`;
+  });
+
+  $("resetWhitelistBtn").addEventListener("click", async () => {
+    const currentSettings = await msg({ type: "GET_SETTINGS" });
+    fillWhitelist(currentSettings.whitelist);
+    toast("Đã khôi phục nội dung đang lưu");
+  });
+
+  $("saveWhitelistBtn").addEventListener("click", async () => {
+    const whitelist = parseWhitelist(whitelistInput.value);
     await msg({ type: "SET_SETTINGS", payload: { whitelist } });
-    toast("✓ Đã lưu whitelist");
+    fillWhitelist(whitelist);
+    toast("Đã cập nhật whitelist");
   });
 
-  // --- Tab Phát hiện ---
-  document.getElementById("realtimeScan").checked = s.realtimeScan ?? true;
-  document.getElementById("submitScan").checked   = s.submitScan   ?? true;
-
-  document.getElementById("saveDetectionBtn").addEventListener("click", async () => {
-    const realtimeScan = document.getElementById("realtimeScan").checked;
-    const submitScan   = document.getElementById("submitScan").checked;
+  $("saveDetectionBtn").addEventListener("click", async () => {
+    const realtimeScan = realtimeScanInput.checked;
+    const submitScan = submitScanInput.checked;
     await msg({ type: "SET_SETTINGS", payload: { realtimeScan, submitScan } });
-    toast("✓ Đã lưu cài đặt phát hiện");
+    updateDetectionSummary(realtimeScan, submitScan);
+    toast("Đã lưu cấu hình phát hiện");
   });
 
-  // --- Tab Kiểm tra ---
-  document.getElementById("checkBtn").addEventListener("click", async () => {
-    const text = document.getElementById("quickText").value.trim();
-    if (!text) return;
-
-    const btn = document.getElementById("checkBtn");
-    btn.classList.add("loading");
-    btn.textContent = "Đang phân tích…";
-
-    const res = await msg({ type: "CHECK_TEXT", text });
-
-    btn.classList.remove("loading");
-    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-      <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
-      <path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-    </svg> Phân tích`;
-
-    if (!res?.ok) {
-      applyResult("ERROR", res?.error || "API lỗi", "—");
-    } else {
-      applyResult(res.result.action || "—", res.result.label_name || "—", res.result.target_name || "—");
+  checkBtn.addEventListener("click", async () => {
+    const text = quickTextInput.value.trim();
+    if (!text) {
+      toast("Nhập nội dung trước khi phân tích", false);
+      return;
     }
+
+    checkBtn.classList.add("loading");
+    checkBtn.innerHTML = "<span>Đang phân tích...</span>";
+
+    const result = await msg({ type: "CHECK_TEXT", text });
+
+    checkBtn.classList.remove("loading");
+    checkBtn.innerHTML = CHECK_BUTTON_HTML;
+
+    if (!result?.ok) {
+      applyResult("ERROR", result?.error || "API lỗi", "-");
+      return;
+    }
+
+    applyResult(
+      result.result.action || "ERROR",
+      result.result.label_name || "-",
+      result.result.target_name || "-"
+    );
   });
 });

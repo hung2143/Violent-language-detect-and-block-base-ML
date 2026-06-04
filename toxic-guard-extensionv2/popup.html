@@ -2,147 +2,212 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Toxic Guard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
   <div class="container">
+    <section class="hero-card">
+      <div class="hero-top">
+        <div class="brand-block">
+          <div class="logo-icon" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2L3 7V12C3 16.55 6.84 20.74 12 22C17.16 20.74 21 16.55 21 12V7L12 2Z" fill="url(#shieldGradient)"/>
+              <path d="M9.7 12.7L8 11L9.35 9.65L9.7 10L14.65 5.05L16 6.4L9.7 12.7Z" fill="white"/>
+              <defs>
+                <linearGradient id="shieldGradient" x1="3" y1="2" x2="21" y2="22" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#0f766e" />
+                  <stop offset="1" stop-color="#14532d" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <div class="eyebrow">Vietnamese content protection</div>
+            <div class="app-name">Toxic Guard</div>
+            <div class="app-version">PhoBERT MTL · Extension bảo vệ nội dung</div>
+          </div>
+        </div>
 
-    <!-- ===== HEADER ===== -->
-    <div class="header">
-      <div class="header-left">
-        <div class="logo-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2L3 7V12C3 16.55 6.84 20.74 12 22C17.16 20.74 21 16.55 21 12V7L12 2Z" fill="url(#sg)"/>
-            <path d="M10 14.5L8 12.5L9.5 11L10 11.5L14 7.5L15.5 9L10 14.5Z" fill="white"/>
-            <defs>
-              <linearGradient id="sg" x1="3" y1="2" x2="21" y2="22" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#6366f1"/><stop offset="1" stop-color="#8b5cf6"/>
-              </linearGradient>
-            </defs>
-          </svg>
-        </div>
-        <div>
-          <div class="app-name">Toxic Guard</div>
-          <div class="app-version">v1.0 · PhoBERT MTL</div>
+        <div class="toggle-wrap">
+          <span class="toggle-caption">Bật bảo vệ</span>
+          <label class="switch" aria-label="Bật hoặc tắt extension">
+            <input type="checkbox" id="enabledToggle" />
+            <span class="slider"></span>
+          </label>
         </div>
       </div>
-      <div class="toggle-wrap">
-        <label class="switch">
-          <input type="checkbox" id="enabledToggle" />
-          <span class="slider"></span>
-        </label>
-        <span id="statusText" class="status-text">Bật</span>
+
+      <div class="hero-status-row">
+        <span class="status-pill" id="statusText">Đang bật</span>
       </div>
+
+      <p class="hero-description" id="statusBarText">Extension đang hoạt động và sẽ quét nội dung theo cấu hình hiện tại.</p>
+
+      <div class="overview-grid">
+        <div class="overview-card">
+          <span class="overview-label">API</span>
+          <strong class="overview-value overview-status" id="apiStateText">
+            <span class="status-dot" id="apiStateDot" aria-hidden="true"></span>
+            <span id="apiStateLabel">Chưa cấu hình</span>
+          </strong>
+        </div>
+        <div class="overview-card">
+          <span class="overview-label">Whitelist</span>
+          <strong class="overview-value" id="whitelistCountText">0 website</strong>
+        </div>
+        <div class="overview-card">
+          <span class="overview-label">Chế độ quét</span>
+          <strong class="overview-value" id="modeCountText">0/2 bật</strong>
+        </div>
+      </div>
+    </section>
+
+    <div class="tabs tabs-four" role="tablist" aria-label="Các nhóm cài đặt">
+      <button class="tab active" data-tab="general" id="tabGeneral" role="tab" aria-selected="true">Chung</button>
+      <button class="tab" data-tab="detection" id="tabDetection" role="tab" aria-selected="false">Phát hiện</button>
+      <button class="tab" data-tab="whitelist" id="tabWhitelist" role="tab" aria-selected="false">Whitelist</button>
+      <button class="tab" data-tab="test" id="tabTest" role="tab" aria-selected="false">Kiểm tra</button>
     </div>
 
-    <!-- ===== STATUS BAR ===== -->
-    <div class="status-bar" id="statusBar">
-      <div class="status-dot" id="statusDot"></div>
-      <span id="statusBarText">Extension đang hoạt động</span>
-    </div>
-
-    <!-- ===== TABS ===== -->
-    <div class="tabs">
-      <button class="tab active" data-tab="general" id="tabGeneral">Chung</button>
-      <button class="tab" data-tab="detection" id="tabDetection">Phát hiện</button>
-      <button class="tab" data-tab="test" id="tabTest">Kiểm tra</button>
-    </div>
-
-    <!-- ===== TAB: CHUNG ===== -->
-    <div class="tab-panel active" id="panelGeneral">
-      <div class="section">
-        <div class="section-label">Endpoint API</div>
-        <div class="input-group">
-          <input type="text" id="apiUrl" placeholder="http://127.0.0.1:8000/predict"
-                 autocomplete="off" spellcheck="false" />
-          <button class="btn-save" id="saveApiBtn">Lưu</button>
+    <div class="tab-panel active" id="panelGeneral" role="tabpanel">
+      <section class="panel-card">
+        <div class="card-head">
+          <div>
+            <div class="section-label">Trạng thái API</div>
+            <div class="section-title">Trạng thái kết nối</div>
+          </div>
+          <span class="mini-badge" id="apiHealthBadge">Sẵn sàng</span>
         </div>
-        <div class="field-hint" id="apiUrlHint"></div>
-      </div>
-
-      <div class="section">
-        <div class="section-label">Whitelist website</div>
-        <input type="text" id="whitelist"
-               placeholder="vd: facebook.com, twitter.com (cách nhau bằng dấu phẩy)"
-               autocomplete="off" spellcheck="false"/>
-        <div class="field-hint">Những trang này sẽ không bị quét.</div>
-        <button class="btn-save-full" id="saveWhitelistBtn">Lưu whitelist</button>
-      </div>
+        <p class="card-copy">Extension sẽ dùng backend đã cấu hình sẵn để phân tích nội dung theo thời gian thực và khi submit form.</p>
+        <div class="helper-row">
+        </div>
+      </section>
     </div>
 
-    <!-- ===== TAB: PHÁT HIỆN ===== -->
-    <div class="tab-panel" id="panelDetection">
-      <div class="toggle-row">
-        <div>
-          <div class="toggle-row-label">Quét real-time</div>
-          <div class="toggle-row-desc">Phân tích khi đang nhập vào ô chữ</div>
+    <div class="tab-panel" id="panelDetection" role="tabpanel">
+      <section class="panel-card">
+        <div class="card-head">
+          <div>
+            <div class="section-label">Detection</div>
+            <div class="section-title">Chọn cách extension phản ứng</div>
+          </div>
         </div>
-        <label class="switch sm">
-          <input type="checkbox" id="realtimeScan" />
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="toggle-row">
-        <div>
-          <div class="toggle-row-label">Quét khi gửi form</div>
-          <div class="toggle-row-desc">Chặn submit nếu nội dung độc hại</div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-row-label">Quét real-time</div>
+            <div class="toggle-row-desc">Phân tích ngay khi người dùng đang nhập nội dung.</div>
+          </div>
+          <label class="switch sm">
+            <input type="checkbox" id="realtimeScan" />
+            <span class="slider"></span>
+          </label>
         </div>
-        <label class="switch sm">
-          <input type="checkbox" id="submitScan" />
-          <span class="slider"></span>
-        </label>
-      </div>
-      <button class="btn-primary" id="saveDetectionBtn">Lưu cài đặt</button>
+
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-row-label">Quét khi gửi form</div>
+            <div class="toggle-row-desc">Chặn hoặc cảnh báo trước khi nội dung được submit.</div>
+          </div>
+          <label class="switch sm">
+            <input type="checkbox" id="submitScan" />
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="detection-note" id="detectionSummaryText">Đang dùng đầy đủ cả hai lớp bảo vệ.</div>
+        <button class="btn-primary" id="saveDetectionBtn">Lưu cấu hình phát hiện</button>
+      </section>
     </div>
 
-    <!-- ===== TAB: KIỂM TRA NHANH ===== -->
-    <div class="tab-panel" id="panelTest">
-      <div class="section">
-        <div class="section-label">Nhập nội dung cần kiểm tra</div>
-        <textarea id="quickText" rows="3" placeholder="Nhập nội dung để phân tích…"></textarea>
+    <div class="tab-panel" id="panelWhitelist" role="tabpanel">
+      <section class="panel-card">
+        <div class="card-head">
+          <div>
+            <div class="section-label">Whitelist</div>
+            <div class="section-title">Quản lý website được bỏ qua</div>
+          </div>
+        </div>
+
+        <p class="card-copy">Các domain trong danh sách này sẽ không bị quét. Nhập mỗi dòng một domain để dễ quản lý.</p>
+
+        <textarea
+          id="whitelist"
+          rows="7"
+          placeholder="facebook.com&#10;reddit.com&#10;twitter.com"
+          autocomplete="off"
+          spellcheck="false"
+        ></textarea>
+
+        <div class="helper-row">
+          <div class="field-hint">Chỉ nhập hostname hoặc domain, ví dụ `facebook.com`, không cần `https://`.</div>
+          <span class="helper-accent" id="whitelistCountInline">0 website</span>
+        </div>
+
+        <button class="btn-secondary" id="resetWhitelistBtn">Khôi phục nội dung đang lưu</button>
+        <button class="btn-primary" id="saveWhitelistBtn">Lưu whitelist</button>
+      </section>
+    </div>
+
+    <div class="tab-panel" id="panelTest" role="tabpanel">
+      <section class="panel-card">
+        <div class="card-head">
+          <div>
+            <div class="section-label">Kiểm tra nhanh</div>
+            <div class="section-title">Thử một đoạn văn bản ngay trong popup</div>
+          </div>
+        </div>
+
+        <textarea id="quickText" rows="4" placeholder="Nhập nội dung để phân tích mức độ độc hại..."></textarea>
+        <div class="helper-row">
+          <div class="field-hint">Dùng để kiểm tra nhanh phản hồi của model trước khi bật trên trang thật.</div>
+          <span class="helper-accent" id="quickTextCount">0 ký tự</span>
+        </div>
+
         <button class="btn-primary" id="checkBtn">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-            <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
-            <path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="11" cy="11" r="7.5" stroke="currentColor" stroke-width="2"/>
+            <path d="M20 20L16.8 16.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
           </svg>
-          Phân tích
+          <span>Phân tích</span>
         </button>
-      </div>
 
-      <!-- Result -->
-      <div class="result-box" id="resultBox">
-        <div class="result-empty" id="resultEmpty">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" opacity="0.35">
-            <path d="M12 2L3 7V12C3 16.55 6.84 20.74 12 22C17.16 20.74 21 16.55 21 12V7L12 2Z"
-                  stroke="currentColor" stroke-width="1.5" fill="none"/>
-            <circle cx="12" cy="12" r="2" fill="currentColor" opacity="0.6"/>
-          </svg>
-          <span>Kết quả phân tích sẽ hiển thị tại đây</span>
-        </div>
-        <div class="result-content hidden" id="resultContent">
-          <div class="result-header">
-            <div class="result-badge" id="resultBadge">—</div>
-            <span class="result-title" id="resultAction">—</span>
+        <div class="result-box" id="resultBox">
+          <div class="result-empty" id="resultEmpty">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 2L3 7V12C3 16.55 6.84 20.74 12 22C17.16 20.74 21 16.55 21 12V7L12 2Z" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M12 9V12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="12" cy="16.2" r="1" fill="currentColor"/>
+            </svg>
+            <span>Kết quả phân tích sẽ hiển thị ở đây sau khi bạn chạy kiểm tra.</span>
           </div>
-          <div class="result-meta">
-            <div class="meta-item">
-              <span class="meta-key">Nhãn</span>
-              <span class="meta-val" id="resultLabel">—</span>
+
+          <div class="result-content hidden" id="resultContent">
+            <div class="result-header">
+              <div class="result-badge" id="resultBadge">-</div>
+              <span class="result-title" id="resultAction">-</span>
             </div>
-            <div class="meta-item">
-              <span class="meta-key">Đối tượng</span>
-              <span class="meta-val" id="resultTarget">—</span>
+            <div class="result-meta">
+              <div class="meta-item">
+                <span class="meta-key">Nhãn</span>
+                <span class="meta-val" id="resultLabel">-</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-key">Đối tượng</span>
+                <span class="meta-val" id="resultTarget">-</span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </section>
     </div>
 
-    <!-- ===== FOOTER ===== -->
-    <div class="footer">DATN · Phát hiện ngôn ngữ độc hại</div>
+    <div class="footer">DATN · Hệ thống phát hiện ngôn ngữ độc hại tiếng Việt</div>
   </div>
 
   <div class="save-toast" id="saveToast"></div>
