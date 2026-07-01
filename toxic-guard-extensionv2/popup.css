@@ -348,6 +348,37 @@ body {
   border-color: rgba(185, 28, 28, 0.12);
 }
 
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 9px;
+}
+
+.stat-tile {
+  border-radius: 16px;
+  padding: 12px 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(244, 248, 245, 0.92));
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.stat-value {
+  display: block;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent-deep);
+  letter-spacing: -0.04em;
+}
+
+.stat-label {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .helper-row {
   display: flex;
   align-items: flex-start;

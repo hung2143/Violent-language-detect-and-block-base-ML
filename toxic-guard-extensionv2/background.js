@@ -18,6 +18,102 @@ function storageSet(obj) {
   return new Promise((resolve) => chrome.storage.sync.set(obj, resolve));
 }
 
+function queryActiveTab() {
+  return new Promise((resolve) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      resolve(tabs?.[0] || null);
+    });
+  });
+}
+
+function sendTabMessage(tabId, payload) {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, payload, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(response || { ok: false, error: "Không có phản hồi từ trang hiện tại." });
+    });
+  });
+}
+
+function collectPageStatsFromDom() {
+  const makeStats = () => ({ total: 0, blocked: 0, warn: 0, hardBlocked: 0 });
+  const addAction = (stats, action, hardBlock = false) => {
+    stats.total += 1;
+    if (action === "WARN") stats.warn += 1;
+    if (action === "BLOCK" || action === "AUTO_BLOCK" || hardBlock) stats.blocked += 1;
+    if (action === "AUTO_BLOCK" || hardBlock) stats.hardBlocked += 1;
+    return stats;
+  };
+  const readAction = (el) => {
+    const text = (el.innerText || el.textContent || "").toUpperCase();
+    if (el.dataset.tgAction) return el.dataset.tgAction;
+    if (el.getAttribute("data-tg-blur")) return el.getAttribute("data-tg-blur");
+    if (el.classList.contains("tg-card-overlay-warn") || el.classList.contains("tg-blur-warn") || text.includes("OFFENSIVE")) return "WARN";
+    if (el.classList.contains("tg-card-overlay-auto-block") || el.classList.contains("tg-blur-auto-block") || text.includes("HATE") || text.includes("BLOCKED")) return "AUTO_BLOCK";
+    if (el.classList.contains("tg-card-overlay-block") || el.classList.contains("tg-blur-block")) return "BLOCK";
+    return "";
+  };
+  const isHardBlock = (el, action) => {
+    const text = (el.innerText || el.textContent || "").toUpperCase();
+    return el.dataset.tgHardBlock === "1" || el.getAttribute("data-tg-hard-block") === "1" || action === "AUTO_BLOCK" || text.includes("HATE") || text.includes("BLOCKED");
+  };
+
+  const wrappers = Array.from(document.querySelectorAll(".tg-reddit-comment-block, .tg-comment-block"));
+  const cards = Array.from(document.querySelectorAll(".tg-card-overlay"));
+  const pageBadges = Array.from(document.querySelectorAll(".tg-page-badge, .tg-blur-overlay"));
+  const topBlurredRoots = Array.from(document.querySelectorAll("[data-tg-blur]")).filter((el) => {
+    if (el.closest(".tg-reddit-comment-block, .tg-comment-block")) return false;
+    if (el.closest(".tg-card-overlay, .tg-page-badge, .tg-blur-overlay, .toxic-guard-badge, [data-tg-overlay]")) return false;
+    return !el.parentElement?.closest?.("[data-tg-blur]");
+  });
+
+  const buildStats = (elements) => elements.reduce((stats, el) => {
+    const action = readAction(el);
+    if (!action) return stats;
+    return addAction(stats, action, isHardBlock(el, action));
+  }, makeStats());
+
+  const commentStats = buildStats(wrappers);
+  const cardStats = buildStats(cards);
+  const blurStats = buildStats(topBlurredRoots);
+  const pageBadgeStats = buildStats(pageBadges);
+  const visualStats = blurStats.total > cardStats.total ? blurStats : cardStats;
+
+  return {
+    ok: true,
+    hostname: location.hostname || "Trang hiện tại",
+    commentStats,
+    cardStats: visualStats,
+    pageBadgeStats,
+    debugCounts: {
+      wrappers: wrappers.length,
+      cards: cards.length,
+      topBlurredRoots: topBlurredRoots.length,
+      pageBadges: pageBadges.length
+    },
+    source: "background-dom",
+    enabled: true
+  };
+}
+
+function executeStatsScript(tabId) {
+  return new Promise((resolve) => {
+    chrome.scripting.executeScript(
+      { target: { tabId }, func: collectPageStatsFromDom },
+      (results) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(results?.[0]?.result || { ok: false, error: "Không đọc được DOM trang hiện tại." });
+      }
+    );
+  });
+}
+
 /** Kiểm tra URL hợp lệ: phải là http hoặc https */
 function isValidApiUrl(url) {
   try {
@@ -123,6 +219,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const isTimeout = fetchErr.name === "AbortError";
           sendResponse({ ok: false, error: isTimeout ? "API timeout (>8s)" : fetchErr.message });
         }
+        return;
+      }
+
+      if (message.type === "GET_ACTIVE_TAB_STATS") {
+        const tab = await queryActiveTab();
+        if (!tab?.id) {
+          sendResponse({ ok: false, error: "Không tìm thấy tab hiện tại." });
+          return;
+        }
+        const domStats = await executeStatsScript(tab.id);
+        sendResponse(domStats?.ok ? domStats : await sendTabMessage(tab.id, { type: "GET_PAGE_STATS" }));
         return;
       }
 

@@ -78,13 +78,25 @@
       <section class="panel-card">
         <div class="card-head">
           <div>
-            <div class="section-label">Trạng thái API</div>
-            <div class="section-title">Trạng thái kết nối</div>
+            <div class="section-label">Trang hiện tại</div>
+            <div class="section-title" id="pageStatsTitle">Đang tải thống kê</div>
           </div>
-          <span class="mini-badge" id="apiHealthBadge">Sẵn sàng</span>
+          <span class="mini-badge" id="pageStatsBadge">Đang đọc</span>
         </div>
-        <p class="card-copy">Extension sẽ dùng backend đã cấu hình sẵn để phân tích nội dung theo thời gian thực và khi submit form.</p>
-        <div class="helper-row">
+        <p class="card-copy" id="pageStatsCopy">Toxic Guard đang đọc số nội dung đã được chặn hoặc cảnh báo trên tab này.</p>
+        <div class="stats-grid">
+          <div class="stat-tile">
+            <span class="stat-value" id="blockedCommentCount">0</span>
+            <span class="stat-label">Đã chặn</span>
+          </div>
+          <div class="stat-tile">
+            <span class="stat-value" id="warnedCommentCount">0</span>
+            <span class="stat-label">Cảnh báo</span>
+          </div>
+          <div class="stat-tile">
+            <span class="stat-value" id="hardBlockedCommentCount">0</span>
+            <span class="stat-label">Chặn cứng</span>
+          </div>
         </div>
       </section>
     </div>

@@ -1,5 +1,6 @@
 .codegraph/
 .codex/
+/docs/
 
 # Documentation and generated report files
 *.doc
