@@ -19,12 +19,15 @@ function getStorage(keys) {
 }
 
 const ToxicGuard = {
+  _instanceId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   observedInputs: new WeakSet(),
   debounceMap: new WeakMap(),
   overlayMap: new WeakMap(),
   pageOverlayMap: new Map(),
   pageOverlayRootMap: new WeakMap(),
+  pageOverlayElementMap: new WeakMap(),
   apiCache: new Map(),
+  _apiCacheTtlMs: 30000,
   // Track các "semantic root" container (shreddit-comment, article, tweet...)
   // đã được blur để tránh tạo nhiều overlay cho cùng một comment
   blurredRoots: new WeakSet(),
@@ -45,6 +48,9 @@ const ToxicGuard = {
   _whitelist: [],
 
   async init() {
+    if (document.documentElement?.dataset) {
+      document.documentElement.dataset.tgActiveInstance = this._instanceId;
+    }
     this.cleanupStalePageState();
 
     // Load toàn bộ settings một lần duy nhất khi khởi động
@@ -66,7 +72,10 @@ const ToxicGuard = {
       try {
         chrome.storage.onChanged.addListener((changes) => {
           if (changes.enabled)      this._enabled      = !!changes.enabled.newValue;
-          if (changes.apiUrl)       this._apiUrl       = changes.apiUrl.newValue;
+          if (changes.apiUrl) {
+            this._apiUrl = changes.apiUrl.newValue;
+            this.apiCache.clear();
+          }
           if (changes.realtimeScan) this._realtimeScan = !!changes.realtimeScan.newValue;
           if (changes.submitScan)   this._submitScan   = !!changes.submitScan.newValue;
           if (changes.whitelist)    this._whitelist    = changes.whitelist.newValue || [];
@@ -87,16 +96,33 @@ const ToxicGuard = {
   },
 
   cleanupStalePageState() {
-    document.querySelectorAll(".tg-card-overlay, .tg-page-badge, .tg-blur-overlay, .toxic-guard-badge, .tg-reddit-comment-badge-row, .tg-comment-badge-row").forEach((el) => {
+    document.querySelectorAll(".tg-card-overlay, .tg-page-badge, .tg-blur-overlay, .toxic-guard-badge, .tg-reddit-comment-card, .tg-reddit-comment-badge-row, .tg-comment-badge-row").forEach((el) => {
       el.remove();
     });
 
+    // Xóa wrapper divs do extension TẠO RA — chỉ unwrap DIV có data-tg-overlay
+    // Với native elements (details, summary v.v.), chỉ xóa class, không unwrap
     document.querySelectorAll(".tg-reddit-comment-block, .tg-comment-block").forEach((el) => {
-      const parent = el.parentElement;
-      if (!parent) return;
-      while (el.firstChild) parent.insertBefore(el.firstChild, el);
-      el.remove();
+      const isExtensionDiv = el.tagName === "DIV" && el.dataset.tgOverlay;
+      if (isExtensionDiv) {
+        const parent = el.parentElement;
+        if (!parent) return;
+        while (el.firstChild) parent.insertBefore(el.firstChild, el);
+        el.remove();
+      } else {
+        // Native element: chỉ xóa class
+        el.classList.remove(
+          "tg-reddit-comment-block", "tg-reddit-comment-block-block",
+          "tg-reddit-comment-block-auto-block", "tg-reddit-comment-block-warn",
+          "tg-reddit-comment-hard-block",
+          "tg-comment-block", "tg-comment-block-block",
+          "tg-comment-block-auto-block", "tg-comment-block-warn",
+          "tg-comment-hard-block"
+        );
+        delete el.dataset.tgOverlay;
+      }
     });
+
 
     document.querySelectorAll("[data-tg-blur], [data-tg-blurred], [data-tg-hard-block]").forEach((el) => {
       el.style.filter = "";
@@ -106,6 +132,7 @@ const ToxicGuard = {
       el.removeAttribute("data-tg-blur");
       el.removeAttribute("data-tg-blurred");
       el.removeAttribute("data-tg-hard-block");
+      el.classList.remove("tg-reddit-identity-blur");
     });
   },
 
@@ -115,11 +142,24 @@ const ToxicGuard = {
   },
 
   // ─── Gọi API trực tiếp, không qua service worker ───────────────────────────
-  async callApi(text) {
+  _normalizeContentText(text) {
+    return String(text || "").trim().replace(/\s+/g, " ");
+  },
+
+  _isCurrentInstance() {
+    const activeId = document.documentElement?.dataset?.tgActiveInstance;
+    return !activeId || activeId === this._instanceId;
+  },
+
+  async callApi(text, { bypassCache = false } = {}) {
     if (!this._enabled) return { ok: true, result: { action: "ALLOW", label_name: "DISABLED", target_name: "" } };
 
-    const cacheKey = text.trim().replace(/\s+/g, " ").slice(0, 500);
-    if (this.apiCache.has(cacheKey)) return this.apiCache.get(cacheKey);
+    const cacheKey = this._normalizeContentText(text).slice(0, 500);
+    const cached = this.apiCache.get(cacheKey);
+    if (!bypassCache && cached?.expiresAt > Date.now()) {
+      return { ...cached.value, fromCache: true };
+    }
+    if (cached) this.apiCache.delete(cacheKey);
 
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), 6000); // timeout 6s
@@ -128,18 +168,22 @@ const ToxicGuard = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
+        cache: "no-store",
         signal: controller.signal,
       });
       clearTimeout(tid);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const result = await response.json();
-      const value = { ok: true, result };
-      this.apiCache.set(cacheKey, value);
+      const value = { ok: true, result, fromCache: false };
+      this.apiCache.set(cacheKey, {
+        value,
+        expiresAt: Date.now() + this._apiCacheTtlMs
+      });
       if (this.apiCache.size > 300) this.apiCache.delete(this.apiCache.keys().next().value);
       return value;
     } catch (err) {
       clearTimeout(tid);
-      return { ok: false, error: err.name === "AbortError" ? "timeout" : err.message };
+      return { ok: false, error: err.name === "AbortError" ? "timeout" : err.message, fromCache: false };
     }
   },
 
@@ -164,6 +208,7 @@ const ToxicGuard = {
     // Chỉ xử lý node thực sự mới — debounce 400ms để gộp nhiều mutation cùng lúc
     const pendingNodes = [];
     const observer = new MutationObserver((mutations) => {
+      if (!this._isCurrentInstance()) return;
       let hasPending = false;
       for (const m of mutations) {
         if (m.type === "characterData" || m.type === "attributes") {
@@ -291,7 +336,7 @@ const ToxicGuard = {
   },
 
   ensurePageOverlayListeners() {
-    if (this._pageOverlayListenersAttached) return;
+    if (this._pageOverlayListenersAttached || typeof window === "undefined") return;
     this._pageOverlayListenersAttached = true;
     const handler = () => this.schedulePageOverlayUpdate();
     window.addEventListener("scroll", handler, true);
@@ -299,7 +344,7 @@ const ToxicGuard = {
   },
 
   schedulePageOverlayUpdate() {
-    if (this._overlayRaf) return;
+    if (this._overlayRaf || typeof requestAnimationFrame === "undefined") return;
     this._overlayRaf = requestAnimationFrame(() => {
       this._overlayRaf = null;
       this.updatePageOverlays();
@@ -307,6 +352,7 @@ const ToxicGuard = {
   },
 
   updatePageOverlays() {
+    this._reconcilePageOverlaySources();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
@@ -331,13 +377,30 @@ const ToxicGuard = {
 
     for (const [el, entry] of this.pageOverlayMap.entries()) {
       if (!document.body.contains(el)) {
-        entry.overlay.remove();
-        entry.observer?.disconnect?.();
-        this.pageOverlayMap.delete(el);
+        this._removePageOverlayEntry(entry, true);
+        if (entry.rootEl?.matches?.("shreddit-comment")) {
+          this._resetRedditRootScan(entry.rootEl, this._findRedditCommentBody(entry.rootEl));
+        }
         continue;
       }
 
-      const rect = el.getBoundingClientRect();
+      let rect = el.getBoundingClientRect();
+      if (Array.isArray(entry.anchorEls) && entry.anchorEls.length) {
+        const anchorRects = entry.anchorEls
+          .filter((anchor) => document.body.contains(anchor))
+          .map((anchor) => anchor.getBoundingClientRect())
+          .filter((anchorRect) => anchorRect.width > 0 && anchorRect.height > 0);
+        if (!anchorRects.length) {
+          entry.overlay.style.display = "none";
+          continue;
+        }
+        const padding = Number(entry.overlayPadding) || 0;
+        const top = Math.min(...anchorRects.map((anchorRect) => anchorRect.top)) - padding;
+        const left = Math.min(...anchorRects.map((anchorRect) => anchorRect.left)) - padding;
+        const right = Math.max(...anchorRects.map((anchorRect) => anchorRect.right)) + padding;
+        const bottom = Math.max(...anchorRects.map((anchorRect) => anchorRect.bottom)) + padding;
+        rect = { top, left, right, bottom, width: right - left, height: bottom - top };
+      }
       if (rect.width === 0 || rect.height === 0) {
         entry.overlay.style.display = "none";
         continue;
@@ -500,7 +563,7 @@ const ToxicGuard = {
     try {
       root.querySelectorAll(CONTAINER_SEL).forEach((el) => {
         if (el.dataset.tgScanned || el.dataset.tgBlurred) return;
-        if (el.closest("shreddit-comment")) return;
+        if (this._findComposedAncestor(el, "shreddit-comment")) return;
         // Skip if inside a blurred container
         if (el.closest("[data-tg-blurred='1']")) return;
         if (el.closest("[data-tg-blur]")) return;
@@ -530,11 +593,12 @@ const ToxicGuard = {
     } catch { /* ignore selector errors */ }
 
     // Tầng 2: TreeWalker quét mọi text node còn sót (leaf nodes trong DOM)
+    const guard = this;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         const p = node.parentElement;
         if (!p) return NodeFilter.FILTER_REJECT;
-        if (p.closest("shreddit-comment")) return NodeFilter.FILTER_REJECT;
+        if (guard._findComposedAncestor(p, "shreddit-comment")) return NodeFilter.FILTER_REJECT;
         if (SKIP_TAGS.has(p.tagName)) return NodeFilter.FILTER_REJECT;
         if (
           p.dataset.tgScanned ||
@@ -598,14 +662,37 @@ const ToxicGuard = {
   // Tìm "semantic root" của một element: ancestor gần nhất khớp với
   // các selector là comment/post container cấp cao nhất.
   // Dùng để nhận biết 2 element khác nhau nhưng cùng thuộc 1 comment.
+  _findComposedAncestor(el, selector) {
+    let node = el;
+    const visited = new Set();
+    while (node && !visited.has(node)) {
+      visited.add(node);
+      try {
+        if (node.matches?.(selector)) return node;
+      } catch { /* ignore selector issues */ }
+      if (node.parentElement) {
+        node = node.parentElement;
+        continue;
+      }
+      const root = node.getRootNode?.();
+      node = root?.host || null;
+    }
+    return null;
+  },
+
+  _isRedditPage() {
+    const hostname = typeof location !== "undefined" ? location.hostname : "";
+    return /(^|\.)reddit\.com$/i.test(hostname);
+  },
+
   _findSemanticRoot(el) {
-    if (!el?.closest) return null;
+    if (!el) return null;
 
     // Reddit comments can live under a post/article tree. Always bind to the
     // nearest comment first; otherwise overlays from a reply can be keyed to a
     // higher post/root and appear on a different comment.
     try {
-      const redditComment = el.closest("shreddit-comment");
+      const redditComment = this._findComposedAncestor(el, "shreddit-comment");
       if (redditComment) return redditComment;
     } catch { /* ignore */ }
 
@@ -622,7 +709,7 @@ const ToxicGuard = {
     ].join(",");
 
     try {
-      return el.closest(SEMANTIC_ROOT_SELECTOR);
+      return this._findComposedAncestor(el, SEMANTIC_ROOT_SELECTOR);
     } catch {
       return null;
     }
@@ -632,12 +719,14 @@ const ToxicGuard = {
     if (!commentEl?.matches?.("shreddit-comment")) return null;
 
     const selectors = [
-      "[slot='comment']",
       "[id$='-comment-rtjson-content']",
       "[id*='comment-rtjson-content']",
       "[data-testid='comment']",
-      ".md"
+      ".md",
+      "[slot='comment']"
     ];
+    const candidates = [];
+    const seen = new Set();
 
     for (const sel of selectors) {
       try {
@@ -645,18 +734,26 @@ const ToxicGuard = {
           ...(commentEl.matches?.(sel) ? [commentEl] : []),
           ...Array.from(commentEl.querySelectorAll(sel))
         ];
-        const body = matches.find((node) => {
-          if (targetEl && !node.contains(targetEl)) return false;
-          const nestedComment = targetEl?.closest?.("shreddit-comment");
-          if (nestedComment && nestedComment !== commentEl) return false;
+        matches.forEach((node) => {
+          if (!node || seen.has(node)) return;
+          seen.add(node);
+          if (this._findComposedAncestor(node, "shreddit-comment") !== commentEl) return;
+          if (node.querySelector?.("shreddit-comment")) return;
+          if (targetEl && !node.contains(targetEl) && !targetEl.contains?.(node)) return;
           const r = node.getBoundingClientRect();
-          return r.width > 50 && r.height > 12;
+          if (r.width > 50 && r.height > 12) candidates.push(node);
         });
-        if (body) return body;
       } catch { /* ignore selector issues */ }
     }
 
-    return null;
+    candidates.sort((a, b) => {
+      if (a.contains(b)) return 1;
+      if (b.contains(a)) return -1;
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return (ar.width * ar.height) - (br.width * br.height);
+    });
+    return candidates[0] || null;
   },
 
   _normalizePageCandidate(el, text) {
@@ -673,6 +770,7 @@ const ToxicGuard = {
   },
 
   async checkAndBlur(el, text) {
+    if (!this._isCurrentInstance()) return;
     // Skip nếu đã bị blur (check trước API call)
     if (el.closest("[data-tg-blurred='1']")) return;
 
@@ -689,13 +787,28 @@ const ToxicGuard = {
 
     try {
       console.log(`[ToxicGuard] API request → tag=${el.tagName} text="${text.slice(0, 80)}" hasRoot=${!!semanticRoot}`);
-      const r = await this.callApi(text);
+      let r = await this.callApi(text);
+      if (!this._isCurrentInstance()) return;
       if (!r.ok) {
         console.warn(`[ToxicGuard] API error: "${text.slice(0, 40)}" | ${r.error}`);
         return;
       }
-      const action = r.result?.action || "ALLOW";
+      let action = r.result?.action || "ALLOW";
       console.log(`[ToxicGuard] API response → "${text.slice(0, 50)}" → ${action} (${r.result?.label_name || 'N/A'})`);
+
+      // A blocking result must be confirmed without cache. This keeps the page
+      // scan consistent with the popup's fresh CHECK_TEXT request and prevents
+      // an old model result from leaving a false badge behind.
+      if (action !== "ALLOW") {
+        const confirmation = await this.callApi(text, { bypassCache: true });
+        if (!this._isCurrentInstance()) return;
+        if (!confirmation.ok) return;
+        r = confirmation;
+        action = r.result?.action || "ALLOW";
+        if (action === "ALLOW") {
+          console.log(`[ToxicGuard] Block result rejected by fresh confirmation → "${text.slice(0, 50)}"`);
+        }
+      }
 
       // Đánh dấu root đã được scan — bất kể ALLOW hay BLOCK.
       // Đảm bảo các fragment text từ cùng comment ở batch sau sẽ bị skip,
@@ -716,7 +829,7 @@ const ToxicGuard = {
         if (semanticRoot) this.blurredRoots.add(semanticRoot);
 
         console.log(`[ToxicGuard] BLUR → "${text.slice(0, 50)}" | ${action}`);
-        this.blurElement(containerEl, r.result, semanticRoot);
+        this.blurElement(containerEl, r.result, semanticRoot, text);
         containerEl.dataset.tgScanned = "1";
       }
     } finally {
@@ -731,30 +844,8 @@ const ToxicGuard = {
     const tag = (container.tagName || "").toLowerCase();
 
     if (tag === "shreddit-comment") {
-      const redditOwnContentSelectors = [
-        "[slot='comment']",
-        "[id$='-comment-rtjson-content']",
-        "[id*='comment-rtjson-content']",
-        "[data-testid='comment']",
-        ".md"
-      ];
-
-      for (const sel of redditOwnContentSelectors) {
-        try {
-          const matches = [
-            ...(container.matches?.(sel) ? [container] : []),
-            ...Array.from(container.querySelectorAll(sel))
-          ];
-          const ownContent = matches.find((node) => {
-            if (!node.contains(targetEl)) return false;
-            const nestedComment = targetEl.closest?.("shreddit-comment");
-            if (nestedComment && nestedComment !== container) return false;
-            const r = node.getBoundingClientRect();
-            return r.width > 50 && r.height > 12;
-          });
-          if (ownContent) return ownContent;
-        } catch { /* ignore selector issues */ }
-      }
+      const ownContent = this._findRedditCommentBody(container, targetEl);
+      if (ownContent) return ownContent;
     }
     // Kiểm tra xem container có chứa nested element cùng loại không (e.g., replies)
     const hasNestedSameType = !!container.querySelector(tag);
@@ -969,6 +1060,7 @@ const ToxicGuard = {
     el.removeAttribute("data-tg-blurred");
     el.removeAttribute("data-tg-hard-block");
     el.classList.remove(
+      "tg-reddit-identity-blur",
       "tg-reddit-comment-block",
       "tg-reddit-comment-block-block",
       "tg-reddit-comment-block-auto-block",
@@ -996,6 +1088,11 @@ const ToxicGuard = {
 
   _removePageOverlayEntry(entry, restoreElement = false) {
     if (!entry) return;
+    if (entry.revalidateTimer && typeof clearTimeout !== "undefined") {
+      clearTimeout(entry.revalidateTimer);
+      entry.revalidateTimer = null;
+    }
+    this._untrackPageOverlayElements(entry);
     if (entry.overlay) entry.overlay.remove();
     if (restoreElement && Array.isArray(entry.metaEls)) {
       entry.metaEls.forEach((metaEl) => this._clearBlurState(metaEl, entry.rootEl));
@@ -1008,8 +1105,31 @@ const ToxicGuard = {
         }
       });
     }
+    // Chỉ unwrap nếu wrapper là element do extension TẠO RA (có classList tg-reddit-comment-block hoặc tg-comment-block)
+    // KHÔNG unwrap native elements như <details> của Reddit
     if (entry.wrapper) {
-      this._unwrapInlineEntry(entry);
+      const isExtensionWrapper =
+        entry.wrapper.tagName === "DIV" &&
+        entry.wrapper.dataset.tgOverlay &&
+        (
+          entry.wrapper.classList?.contains("tg-reddit-comment-block") ||
+          entry.wrapper.classList?.contains("tg-comment-block")
+        );
+      if (isExtensionWrapper) {
+        this._unwrapInlineEntry(entry);
+      } else {
+        // Native element: chỉ xóa class đánh dấu, không thay đổi cấu trúc
+        const actionClass = (entry.rootEl?.getAttribute?.("data-tg-blur") || "block").toLowerCase().replace("_", "-");
+        entry.wrapper.classList.remove(
+          "tg-reddit-comment-block",
+          `tg-reddit-comment-block-${actionClass}`,
+          "tg-reddit-comment-hard-block",
+          "tg-comment-block",
+          `tg-comment-block-${actionClass}`,
+          "tg-comment-hard-block"
+        );
+        delete entry.wrapper.dataset.tgOverlay;
+      }
     }
     entry.observer?.disconnect?.();
     if (entry.el) this.pageOverlayMap.delete(entry.el);
@@ -1025,6 +1145,24 @@ const ToxicGuard = {
     }
     entry.wrapper.remove();
   },
+
+  _trackPageOverlayElements(entry, elements) {
+    if (!entry) return;
+    if (!Array.isArray(entry.trackedEls)) entry.trackedEls = [];
+    (elements || []).filter(Boolean).forEach((el) => {
+      if (!entry.trackedEls.includes(el)) entry.trackedEls.push(el);
+      this.pageOverlayElementMap.set(el, entry);
+    });
+  },
+
+  _untrackPageOverlayElements(entry, elements = entry?.trackedEls || []) {
+    if (!entry) return;
+    (elements || []).filter(Boolean).forEach((el) => {
+      if (this.pageOverlayElementMap.get(el) === entry) this.pageOverlayElementMap.delete(el);
+    });
+    if (!elements || elements === entry.trackedEls) entry.trackedEls = [];
+  },
+
 
   _buildBadgeText(result) {
     const action = result?.action || "BLOCK";
@@ -1069,7 +1207,7 @@ const ToxicGuard = {
       return el.dataset.tgHardBlock === "1" || el.getAttribute("data-tg-hard-block") === "1" || action === "AUTO_BLOCK" || text.includes("HATE") || text.includes("BLOCKED");
     };
 
-    const wrappers = Array.from(document.querySelectorAll(".tg-reddit-comment-block, .tg-comment-block"));
+    const wrappers = Array.from(document.querySelectorAll(".tg-reddit-comment-card, .tg-comment-block"));
     const cards = Array.from(document.querySelectorAll(".tg-card-overlay"));
     const pageBadges = Array.from(document.querySelectorAll(".tg-page-badge, .tg-blur-overlay"));
     const topBlurredRoots = Array.from(document.querySelectorAll("[data-tg-blur]")).filter((el) => {
@@ -1116,7 +1254,13 @@ const ToxicGuard = {
     const rowClass = variant === "reddit" ? "tg-reddit-comment-badge-row" : "tg-comment-badge-row";
     const badgeClass = variant === "reddit" ? "tg-reddit-comment-badge" : "tg-comment-badge";
 
-    if (wrapper.querySelector(`:scope > .${rowClass}`)) return;
+    // Xóa badge row thừa nếu có (do race condition tạo ra duplicate)
+    // Chỉ giữ lại direct child đầu tiên, xóa các direct child dư thừa
+    const directRows = Array.from(wrapper.children).filter(c => c.classList.contains(rowClass));
+    if (directRows.length > 1) {
+      directRows.slice(1).forEach(r => r.remove());
+    }
+    if (directRows.length >= 1) return;
 
     const actionClass = wrapper.dataset.tgActionClass || "block";
     const badgeText = wrapper.dataset.tgBadgeText || this._buildBadgeText({
@@ -1144,7 +1288,81 @@ const ToxicGuard = {
     return !!(entry?.overlay?.isConnected && document.body.contains(el));
   },
 
+  _hasLiveTrackedOverlay(el) {
+    const entry = this.pageOverlayElementMap.get(el);
+    return !!(entry?.overlay?.isConnected && document.body.contains(el));
+  },
+
+  _resetRedditRootScan(rootEl, bodyEl) {
+    if (rootEl) {
+      this.blurredRoots.delete(rootEl);
+      this.scannedRoots.delete(rootEl);
+      this.processingRoots.delete(rootEl);
+      delete rootEl.dataset.tgScanned;
+      delete rootEl.dataset.tgBlurred;
+    }
+    if (bodyEl) {
+      delete bodyEl.dataset.tgScanned;
+      delete bodyEl.dataset.tgBlurred;
+      bodyEl.querySelectorAll?.("[data-tg-scanned], [data-tg-blurred]").forEach((child) => {
+        delete child.dataset.tgScanned;
+        delete child.dataset.tgBlurred;
+      });
+    }
+  },
+
+  _reconcilePageOverlaySources() {
+    for (const [, entry] of Array.from(this.pageOverlayMap.entries())) {
+      if (!entry?.sourceText || !entry.rootEl?.matches?.("shreddit-comment")) continue;
+      const currentBody = document.body.contains(entry.el)
+        ? (this._findRedditCommentBody(entry.rootEl, entry.el) || entry.el)
+        : this._findRedditCommentBody(entry.rootEl);
+      const currentText = this._normalizeContentText(currentBody?.innerText || currentBody?.textContent || "");
+      if (currentText === entry.sourceText) continue;
+
+      this._removePageOverlayEntry(entry, true);
+      this._resetRedditRootScan(entry.rootEl, currentBody);
+      if (typeof setTimeout !== "undefined") this.schedulePageScan(0);
+    }
+  },
+
+  _removeOrphanPageCards() {
+    const ownedCards = new Set(
+      Array.from(this.pageOverlayMap.values())
+        .map((entry) => entry?.overlay)
+        .filter(Boolean)
+    );
+    document.querySelectorAll(".tg-reddit-comment-card, .tg-card-overlay").forEach((card) => {
+      if (!ownedCards.has(card)) card.remove();
+    });
+  },
+
+  async _revalidateRedditEntry(entry) {
+    if (!entry?.sourceText || !this._isCurrentInstance()) return;
+    if (this.pageOverlayRootMap.get(entry.rootEl) !== entry) return;
+
+    const currentBody = this._findRedditCommentBody(entry.rootEl, entry.el) || entry.el;
+    const currentText = this._normalizeContentText(currentBody?.innerText || currentBody?.textContent || "");
+    if (currentText !== entry.sourceText) {
+      this._reconcilePageOverlaySources();
+      return;
+    }
+
+    const fresh = await this.callApi(entry.sourceText, { bypassCache: true });
+    if (!fresh.ok || !this._isCurrentInstance()) return;
+    if (this.pageOverlayRootMap.get(entry.rootEl) !== entry) return;
+    if ((fresh.result?.action || "ALLOW") !== "ALLOW") return;
+
+    this._removePageOverlayEntry(entry, true);
+    this.blurredRoots.delete(entry.rootEl);
+    this.scannedRoots.add(entry.rootEl);
+    console.log(`[ToxicGuard] Removed false Reddit badge after live revalidation → "${entry.sourceText.slice(0, 50)}"`);
+  },
+
   reconcileBlurState() {
+    if (!this._isCurrentInstance()) return;
+    this._removeOrphanPageCards();
+    this._reconcilePageOverlaySources();
     document.querySelectorAll(".tg-reddit-comment-block, .tg-comment-block").forEach((wrapper) => {
       this._ensureInlineBadgeRow(wrapper);
     });
@@ -1160,6 +1378,7 @@ const ToxicGuard = {
       }
 
       if (el.__tgOwnerWrapper?.isConnected) return;
+      if (this._hasLiveTrackedOverlay(el)) return;
       if (this._hasLiveCardOverlay(el)) return;
 
       const scopeRoot = el.closest?.("shreddit-comment") || null;
@@ -1192,7 +1411,6 @@ const ToxicGuard = {
     if (!commentEl?.matches?.("shreddit-comment")) return [];
 
     const selectors = [
-      "[slot='commentMeta']",
       "[slot='commentAuthor']",
       "[slot='commentAvatar']",
       "[slot='authorFlair']",
@@ -1202,8 +1420,13 @@ const ToxicGuard = {
     ].join(",");
 
     try {
-      return Array.from(commentEl.querySelectorAll(selectors)).filter((el) => {
-        return el.closest?.("shreddit-comment") === commentEl;
+      const candidates = Array.from(commentEl.querySelectorAll(selectors)).filter((el) => {
+        return el.closest?.("shreddit-comment") === commentEl &&
+          !el.querySelector?.("shreddit-comment");
+      });
+      return candidates.filter((el, index) => {
+        if (candidates.indexOf(el) !== index) return false;
+        return !candidates.some((other) => other !== el && other.contains?.(el));
       });
     } catch {
       return [];
@@ -1215,7 +1438,9 @@ const ToxicGuard = {
     const label = result?.label_name || "TOXIC";
     const isHardBlock = action === "AUTO_BLOCK" || label === "HATE";
 
-    this._findRedditCommentMetaElements(commentEl).forEach((metaEl) => {
+    const metaEls = this._findRedditCommentMetaElements(commentEl);
+    metaEls.forEach((metaEl) => {
+      metaEl.classList.add("tg-reddit-identity-blur");
       metaEl.dataset.tgBlurred = "1";
       metaEl.style.filter = "blur(8px)";
       metaEl.style.pointerEvents = "none";
@@ -1224,6 +1449,7 @@ const ToxicGuard = {
       metaEl.setAttribute("data-tg-blur", action);
       metaEl.setAttribute("data-tg-hard-block", isHardBlock ? "1" : "0");
     });
+    return metaEls;
   },
 
   _wrapRedditCommentParts(wrapper, bodyEl, commentEl) {
@@ -1247,7 +1473,7 @@ const ToxicGuard = {
     return true;
   },
 
-  blurRedditCommentElement(el, result, rootEl) {
+  blurRedditCommentElement(el, result, rootEl, classifiedText = null) {
     const overlayRoot = rootEl || this._findSemanticRoot(el) || el;
     const severity = this._getOverlaySeverity(result);
     const action = result.action || "BLOCK";
@@ -1258,78 +1484,118 @@ const ToxicGuard = {
 
     if (existingEntry) {
       if ((existingEntry.severity || 0) >= severity) return;
-      existingEntry.overlay.className = `tg-reddit-comment-badge-row tg-reddit-comment-badge-row-${actionClass}`;
-      existingEntry.overlay.querySelector(".tg-reddit-comment-badge").textContent = this._buildBadgeText(result);
+      const badgeSpan = existingEntry.overlay?.querySelector?.(".tg-reddit-comment-badge");
+      if (badgeSpan) badgeSpan.textContent = this._buildBadgeText(result);
+      if (existingEntry.overlay) {
+        existingEntry.overlay.className = `tg-reddit-comment-card tg-reddit-comment-card-${actionClass}`;
+        existingEntry.overlay.dataset.tgAction = action;
+        existingEntry.overlay.dataset.tgHardBlock = isHardBlock ? "1" : "0";
+        existingEntry.overlay.setAttribute("aria-label", `${this._buildBadgeText(result)} comment`);
+      }
       existingEntry.severity = severity;
-      this._setInlineWrapperState(existingEntry.wrapper, "reddit", result);
+      existingEntry.isHardBlock = isHardBlock;
       this._applyBlurState(existingEntry.el || el, result);
-      this._applyRedditCommentMetaBlur(overlayRoot, result);
+      const metaEls = this._applyRedditCommentMetaBlur(overlayRoot, result);
+      existingEntry.metaEls = metaEls;
+      existingEntry.anchorEls = [existingEntry.el || el, ...metaEls];
+      this._trackPageOverlayElements(existingEntry, metaEls);
+      this.schedulePageOverlayUpdate();
       return;
     }
 
     if (el.dataset.tgBlurred) return;
 
-    const wrapper = document.createElement("div");
-    wrapper.className = `tg-reddit-comment-block tg-reddit-comment-block-${actionClass}`;
-    if (isHardBlock) wrapper.classList.add("tg-reddit-comment-hard-block");
-    wrapper.dataset.tgOverlay = "1";
-    wrapper.dataset.tgSourceText = (el.innerText || el.textContent || "").trim().slice(0, 160);
-    wrapper.dataset.tgRootTag = overlayRoot.tagName || "";
-    wrapper.dataset.tgRootId = overlayRoot.id || "";
-    this._setInlineWrapperState(wrapper, "reddit", result);
-    if (!this._wrapRedditCommentParts(wrapper, el, overlayRoot)) {
-      el.parentElement?.insertBefore(wrapper, el);
-      wrapper.appendChild(el);
+    // Blur only the body selected inside this exact shreddit-comment. Never
+    // decorate its parent because Reddit can keep the whole reply tree there.
+    const blurTarget = this._findRedditCommentBody(overlayRoot, el) || (
+      el.closest?.("shreddit-comment") === overlayRoot &&
+      !el.querySelector?.("shreddit-comment")
+        ? el
+        : null
+    );
+    if (!blurTarget) {
+      console.warn("[ToxicGuard] Skip unsafe Reddit blur target containing replies");
+      return;
     }
+    const currentText = this._normalizeContentText(blurTarget.innerText || blurTarget.textContent || "");
+    const expectedText = classifiedText == null ? currentText : this._normalizeContentText(classifiedText);
+    if (!currentText || currentText !== expectedText) {
+      this._resetRedditRootScan(overlayRoot, blurTarget);
+      if (typeof setTimeout !== "undefined") this.schedulePageScan(0);
+      console.log("[ToxicGuard] Skip stale Reddit result: comment text changed during API request");
+      return;
+    }
+    const parent = blurTarget.parentElement;
+    if (!parent) return;
+    this._applyBlurState(blurTarget, result);
+    const metaEls = this._applyRedditCommentMetaBlur(overlayRoot, result);
 
-    this._applyBlurState(el, result);
-    this._applyRedditCommentMetaBlur(overlayRoot, result);
-
-    const row = document.createElement("div");
-    row.className = `tg-reddit-comment-badge-row tg-reddit-comment-badge-row-${actionClass}`;
-    row.setAttribute("data-tg-overlay", "1");
-    row.dataset.tgSourceText = (el.innerText || el.textContent || "").trim().slice(0, 160);
-    row.dataset.tgRootTag = overlayRoot.tagName || "";
-    row.dataset.tgRootId = overlayRoot.id || "";
+    // One visual card covers only the union of this comment's safe anchors:
+    // avatar, author identity, and own body. Replies are never anchor elements.
+    const card = document.createElement("div");
+    card.className = `tg-reddit-comment-card tg-reddit-comment-card-${actionClass}`;
+    card.setAttribute("data-tg-overlay", "1");
+    card.setAttribute("role", "status");
+    card.setAttribute("aria-label", `${this._buildBadgeText(result)} comment`);
+    card.dataset.tgAction = action;
+    card.dataset.tgHardBlock = isHardBlock ? "1" : "0";
+    card.dataset.tgSourceText = currentText.slice(0, 160);
+    card.dataset.tgRootTag = overlayRoot.tagName || "";
+    card.dataset.tgRootId = overlayRoot.id || "";
 
     const badge = document.createElement("span");
     badge.className = "tg-reddit-comment-badge";
     badge.textContent = this._buildBadgeText(result);
-    row.appendChild(badge);
+    card.appendChild(badge);
+    document.body.appendChild(card);
 
-    if (wrapper) {
-      wrapper.insertBefore(row, el);
-    } else if (el.parentElement) {
-      el.parentElement.insertBefore(row, el);
-    } else {
-      document.body.appendChild(row);
+    const anchorEls = [blurTarget, ...metaEls];
+    let observer = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => this.schedulePageOverlayUpdate());
+      anchorEls.forEach((anchor) => observer.observe(anchor));
     }
 
     const entry = {
-      overlay: row,
-      observer: null,
-      el,
+      overlay: card,
+      observer,
+      el: blurTarget,
       rootEl: overlayRoot,
       severity,
-      inline: true,
-      wrapper,
-      metaEls: this._findRedditCommentMetaElements(overlayRoot)
+      inline: false,
+      wrapper: null,
+      metaEls,
+      anchorEls,
+      overlayPadding: 4,
+      isHardBlock,
+      sourceText: currentText
     };
+    this.pageOverlayMap.set(blurTarget, entry);
     this.pageOverlayRootMap.set(overlayRoot, entry);
+    this._trackPageOverlayElements(entry, [blurTarget, ...metaEls]);
+    this.ensurePageOverlayListeners();
+    this.schedulePageOverlayUpdate();
+    if (typeof setTimeout !== "undefined") {
+      entry.revalidateTimer = setTimeout(() => {
+        entry.revalidateTimer = null;
+        this._revalidateRedditEntry(entry);
+      }, 1200);
+    }
 
     if (!isHardBlock) {
       const reveal = (evt) => {
         evt.preventDefault();
         evt.stopPropagation();
+        if (entry.isHardBlock) return;
         this._removePageOverlayEntry(entry, true);
       };
-      wrapper.style.cursor = "pointer";
-      wrapper.title = "Click to reveal this offensive comment";
-      wrapper.addEventListener("click", reveal, { once: true, capture: true });
+      card.style.cursor = "pointer";
+      card.addEventListener("click", reveal, { once: true, capture: true });
     }
   },
 
   _findGenericCommentGroup(el, rootEl) {
+
     const candidates = [];
     let current = el;
     const bodyRect = el.getBoundingClientRect();
@@ -1379,7 +1645,10 @@ const ToxicGuard = {
         text.length >= 4 &&
         text.length <= 1200;
 
-      if (reasonable && !hasNestedAfterBody && (isSemanticCard || hasIdentity || hasActions || hasHeaderBeforeBody)) {
+      // Quan trọng: container phải bắt đầu GẦN với body (tối đa 120px phía trên)
+      // Điều này ngăn chặn việc bắt nhầm container của comment trên
+      const containerStartsNearBody = rect.top >= bodyRect.top - 120;
+      if (reasonable && containerStartsNearBody && !hasNestedAfterBody && (isSemanticCard || hasIdentity || hasActions || hasHeaderBeforeBody)) {
         const compactScore = Math.max(0, 35 - rect.height / 12);
         candidates.push({
           el: current,
@@ -1511,10 +1780,10 @@ const ToxicGuard = {
           r.height > 0 &&
           r.height <= 96 &&
           r.width <= Math.max(520, bodyRect.width * 0.85) &&
-          r.bottom >= bodyRect.top - 130 &&
-          r.top <= bodyRect.top + 24 &&
-          r.right >= bodyRect.left - 160 &&
-          r.left <= bodyRect.left + 360
+          r.bottom >= bodyRect.top - 60 &&
+          r.top <= bodyRect.top + 4 &&
+          r.right >= bodyRect.left - 120 &&
+          r.left <= bodyRect.left + 300
         ) {
           set.add(parent);
           parent = parent.parentElement;
@@ -1534,10 +1803,10 @@ const ToxicGuard = {
         const r = node.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) return;
 
-        const isNearVertically = r.bottom >= bodyRect.top - 130 && r.top <= bodyRect.top + 28;
+        const isNearVertically = r.bottom >= bodyRect.top - 60 && r.top <= bodyRect.top + 4;
         const isNearHorizontally =
-          r.right >= bodyRect.left - 160 &&
-          r.left <= Math.min(bodyRect.right + 32, bodyRect.left + 380);
+          r.right >= bodyRect.left - 120 &&
+          r.left <= Math.min(bodyRect.right + 16, bodyRect.left + 300);
         if (!isNearVertically || !isNearHorizontally) return;
 
         found.add(node);
@@ -1571,38 +1840,13 @@ const ToxicGuard = {
       });
     }
 
-    const wrapperRect = wrapper.getBoundingClientRect();
-    const bodyRect = bodyEl.getBoundingClientRect();
-    const union = identityEls.reduce((acc, node) => {
-      const r = node.getBoundingClientRect();
-      acc.top = Math.min(acc.top, r.top);
-      acc.left = Math.min(acc.left, r.left);
-      acc.right = Math.max(acc.right, r.right);
-      acc.bottom = Math.max(acc.bottom, r.bottom);
-      return acc;
-    }, {
-      top: wrapperRect.top,
-      left: wrapperRect.left,
-      right: wrapperRect.right,
-      bottom: wrapperRect.bottom
-    });
-
-    const extraTop = Math.max(0, wrapperRect.top - union.top + 8);
-    const extraLeft = Math.max(0, wrapperRect.left - union.left + 8);
-    const extraRight = Math.max(0, union.right - wrapperRect.right + 8);
-
     wrapper.style.position = "relative";
     wrapper.style.zIndex = "1";
-    if (wrapper.parentElement) wrapper.parentElement.style.overflow = "visible";
-    wrapper.style.marginTop = `-${extraTop}px`;
-    wrapper.style.paddingTop = `${8 + extraTop}px`;
-    wrapper.style.marginLeft = `-${extraLeft}px`;
-    wrapper.style.paddingLeft = `${8 + extraLeft}px`;
-    wrapper.style.width = `${Math.max(wrapperRect.width + extraLeft + extraRight, bodyRect.width + extraLeft)}px`;
-    wrapper.style.minHeight = `${Math.max(wrapperRect.height + extraTop, bodyRect.height + extraTop + 16)}px`;
+    // Không dùng margin-top âm → badge sẽ không nhúc nhích khi scroll
+    // Identity elements được blur tại chỗ, không thay đổi layout của wrapper
     wrapper.dataset.tgIdentityCount = String(identityEls.length);
-    wrapper.dataset.tgExpandedTop = String(Math.round(extraTop));
-    wrapper.dataset.tgExpandedLeft = String(Math.round(extraLeft));
+    wrapper.dataset.tgExpandedTop = "0";
+    wrapper.dataset.tgExpandedLeft = "0";
 
     identityEls.forEach((node) => {
       node.dataset.tgBlurred = "1";
@@ -1651,6 +1895,7 @@ const ToxicGuard = {
   },
 
   blurGenericCommentElement(el, result, rootEl = null) {
+    if (this._findComposedAncestor(el, "shreddit-comment")) return false;
     const groupEl = this._findGenericCommentGroup(el, rootEl);
     if (!groupEl || groupEl.matches?.("shreddit-comment")) return false;
     if (groupEl.closest?.(".tg-comment-block, .tg-reddit-comment-block")) return false;
@@ -1707,6 +1952,7 @@ const ToxicGuard = {
     row.appendChild(badge);
     wrapper.insertBefore(row, groupEl);
 
+
     this._applyGenericInlineBlur(groupEl, el, result);
     this._expandGenericWrapperToNearbyIdentity(wrapper, el);
 
@@ -1730,10 +1976,15 @@ const ToxicGuard = {
     return true;
   },
 
-  blurElement(el, result, rootEl = null) {
-    const overlayRoot = rootEl || this._findSemanticRoot(el) || el;
-    if (overlayRoot?.matches?.("shreddit-comment")) {
-      this.blurRedditCommentElement(el, result, overlayRoot);
+  blurElement(el, result, rootEl = null, classifiedText = null) {
+    const redditRoot = this._findComposedAncestor(el, "shreddit-comment");
+    const overlayRoot = redditRoot || rootEl || this._findSemanticRoot(el) || el;
+    if (redditRoot || overlayRoot?.matches?.("shreddit-comment")) {
+      this.blurRedditCommentElement(el, result, redditRoot || overlayRoot, classifiedText);
+      return;
+    }
+    if (this._isRedditPage() && !overlayRoot?.matches?.("shreddit-post")) {
+      console.log("[ToxicGuard] Skip generic overlay for an unowned Reddit node");
       return;
     }
     if (this.blurGenericCommentElement(el, result, overlayRoot)) return;
