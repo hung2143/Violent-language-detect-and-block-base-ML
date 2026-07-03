@@ -224,6 +224,7 @@
   box-sizing: border-box;
   pointer-events: auto;
   overflow: hidden;          /* badge không tràn ra ngoài biên card */
+  border: 1px solid transparent;
 }
 
 .tg-card-label {
@@ -241,7 +242,8 @@
 
 .tg-card-overlay.tg-card-overlay-block,
 .tg-card-overlay.tg-card-overlay-auto-block {
-  background: rgba(239, 68, 68, 0.10);
+  background: rgba(239, 68, 68, 0.20);
+  border-color: rgba(239, 68, 68, 0.35);
 }
 
 .tg-card-overlay.tg-card-overlay-warn {

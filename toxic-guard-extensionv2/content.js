@@ -41,6 +41,8 @@ const ToxicGuard = {
   _pageOverlayListenersAttached: false,
   _domScanTimer: null,
   _mutationDebounceTimer: null,   // debounce MutationObserver
+  _mutationDebounceMs: 120,
+  _mutationScanDelayMs: 0,
   _apiUrl: "http://127.0.0.1:8000/predict",
   _enabled: true,
   _realtimeScan: true,
@@ -232,8 +234,8 @@ const ToxicGuard = {
         }
         this.reconcileBlurState();
         this.reanchorGenericCommentBlocks();
-        this.schedulePageScan(300);
-      }, 400);
+        this.schedulePageScan(this._mutationScanDelayMs);
+      }, this._mutationDebounceMs);
     });
     observer.observe(document.body, {
       childList: true,
@@ -903,10 +905,9 @@ const ToxicGuard = {
       let action = r.result?.action || "ALLOW";
       console.log(`[ToxicGuard] API response → "${text.slice(0, 50)}" → ${action} (${r.result?.label_name || 'N/A'})`);
 
-      // A blocking result must be confirmed without cache. This keeps the page
-      // scan consistent with the popup's fresh CHECK_TEXT request and prevents
-      // an old model result from leaving a false badge behind.
-      if (action !== "ALLOW") {
+      // Only cached blocking results need a fresh confirmation. Fresh backend
+      // responses can be applied immediately so new comments are covered faster.
+      if (action !== "ALLOW" && r.fromCache) {
         const confirmation = await this.callApi(text, { bypassCache: true });
         if (!this._isCurrentInstance()) return;
         if (!confirmation.ok) return;
