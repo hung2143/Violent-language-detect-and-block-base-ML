@@ -273,7 +273,7 @@
 
 .tg-reddit-comment-card {
   all: initial;
-  position: fixed;
+  position: absolute;
   z-index: 2147483646;
   display: flex;
   align-items: flex-start;
@@ -282,7 +282,7 @@
   padding: 7px;
   overflow: hidden;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 0;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
   pointer-events: auto;
   font-family: var(--tg-font);

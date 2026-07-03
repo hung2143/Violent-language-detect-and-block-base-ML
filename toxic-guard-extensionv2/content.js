@@ -338,23 +338,32 @@ const ToxicGuard = {
   ensurePageOverlayListeners() {
     if (this._pageOverlayListenersAttached || typeof window === "undefined") return;
     this._pageOverlayListenersAttached = true;
-    const handler = () => this.schedulePageOverlayUpdate();
-    window.addEventListener("scroll", handler, true);
-    window.addEventListener("resize", handler);
+    const scrollHandler = () => this.schedulePageOverlayUpdate("scroll");
+    const layoutHandler = () => this.schedulePageOverlayUpdate("layout");
+    window.addEventListener("scroll", scrollHandler, true);
+    window.addEventListener("resize", layoutHandler);
   },
 
-  schedulePageOverlayUpdate() {
+  schedulePageOverlayUpdate(reason = "layout") {
+    if (reason !== "scroll" || !this._overlayUpdateReason) {
+      this._overlayUpdateReason = reason;
+    }
     if (this._overlayRaf || typeof requestAnimationFrame === "undefined") return;
     this._overlayRaf = requestAnimationFrame(() => {
+      const updateReason = this._overlayUpdateReason || "layout";
+      this._overlayUpdateReason = null;
       this._overlayRaf = null;
-      this.updatePageOverlays();
+      this.updatePageOverlays(updateReason);
     });
   },
 
-  updatePageOverlays() {
+  updatePageOverlays(reason = "layout") {
+    const isScrollUpdate = reason === "scroll";
     this._reconcilePageOverlaySources();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const scrollX = window.scrollX ?? window.pageXOffset ?? document.documentElement?.scrollLeft ?? document.body?.scrollLeft ?? 0;
+    const scrollY = window.scrollY ?? window.pageYOffset ?? document.documentElement?.scrollTop ?? document.body?.scrollTop ?? 0;
 
     // Detect chiều cao header cố định (sticky/fixed) — tránh overlay đè lên header
     // Tìm header/nav có position fixed hoặc sticky ở đầu trang
@@ -376,6 +385,7 @@ const ToxicGuard = {
     if (headerHeight <= 0) headerHeight = 56;
 
     for (const [el, entry] of this.pageOverlayMap.entries()) {
+      const isDocumentPositioned = entry.positionMode === "document";
       if (!document.body.contains(el)) {
         this._removePageOverlayEntry(entry, true);
         if (entry.rootEl?.matches?.("shreddit-comment")) {
@@ -393,22 +403,47 @@ const ToxicGuard = {
         continue;
       }
 
-      let rect = el.getBoundingClientRect();
-      if (Array.isArray(entry.anchorEls) && entry.anchorEls.length) {
-        const anchorRects = entry.anchorEls
-          .filter((anchor) => document.body.contains(anchor))
-          .map((anchor) => anchor.getBoundingClientRect())
-          .filter((anchorRect) => anchorRect.width > 0 && anchorRect.height > 0);
-        if (!anchorRects.length) {
-          entry.overlay.style.display = "none";
-          continue;
+      let rect;
+      if (isDocumentPositioned && isScrollUpdate && entry.documentRect) {
+        const docRect = entry.documentRect;
+        rect = {
+          top: docRect.top - scrollY,
+          left: docRect.left - scrollX,
+          right: docRect.right - scrollX,
+          bottom: docRect.bottom - scrollY,
+          width: docRect.width,
+          height: docRect.height
+        };
+      } else {
+        rect = el.getBoundingClientRect();
+        if (Array.isArray(entry.anchorEls) && entry.anchorEls.length) {
+          const anchorRects = entry.anchorEls
+            .filter((anchor) => document.body.contains(anchor))
+            .map((anchor) => anchor.getBoundingClientRect())
+            .filter((anchorRect) => anchorRect.width > 0 && anchorRect.height > 0);
+          if (!anchorRects.length) {
+            entry.overlay.style.display = "none";
+            continue;
+          }
+          const padding = Number(entry.overlayPadding) || 0;
+          const top = Math.min(...anchorRects.map((anchorRect) => anchorRect.top)) - padding;
+          const left = Math.min(...anchorRects.map((anchorRect) => anchorRect.left)) - padding;
+          const right = Math.max(...anchorRects.map((anchorRect) => anchorRect.right)) + padding;
+          const bottom = Math.max(...anchorRects.map((anchorRect) => anchorRect.bottom)) + padding;
+          rect = { top, left, right, bottom, width: right - left, height: bottom - top };
         }
-        const padding = Number(entry.overlayPadding) || 0;
-        const top = Math.min(...anchorRects.map((anchorRect) => anchorRect.top)) - padding;
-        const left = Math.min(...anchorRects.map((anchorRect) => anchorRect.left)) - padding;
-        const right = Math.max(...anchorRects.map((anchorRect) => anchorRect.right)) + padding;
-        const bottom = Math.max(...anchorRects.map((anchorRect) => anchorRect.bottom)) + padding;
-        rect = { top, left, right, bottom, width: right - left, height: bottom - top };
+        if (isDocumentPositioned && rect.width > 0 && rect.height > 0) {
+          const docTop = rect.top + scrollY;
+          const docLeft = rect.left + scrollX;
+          entry.documentRect = {
+            top: docTop,
+            left: docLeft,
+            right: docLeft + rect.width,
+            bottom: docTop + rect.height,
+            width: rect.width,
+            height: rect.height
+          };
+        }
       }
       if (rect.width === 0 || rect.height === 0) {
         entry.overlay.style.display = "none";
@@ -422,22 +457,47 @@ const ToxicGuard = {
       }
 
       // Clamp overlay: top không nhỏ hơn headerHeight để tránh đè lên header
-      const top    = Math.max(headerHeight, rect.top);
-      const left   = Math.max(0, rect.left);
-      const right  = Math.min(vw, rect.right);
-      const bottom = Math.min(vh, rect.bottom);
+      const visibleTop = Math.max(headerHeight, rect.top);
+      const visibleLeft = Math.max(0, rect.left);
+      const visibleRight = Math.min(vw, rect.right);
+      const visibleBottom = Math.min(vh, rect.bottom);
 
       // Nếu phần visible quá nhỏ (< 10px) thì ẩn overlay
-      if (right - left < 10 || bottom - top < 10) {
+      if (visibleRight - visibleLeft < 10 || visibleBottom - visibleTop < 10) {
         entry.overlay.style.display = "none";
         continue;
       }
 
       entry.overlay.style.display = "flex";
-      entry.overlay.style.top    = `${top}px`;
-      entry.overlay.style.left   = `${left}px`;
-      entry.overlay.style.width  = `${right - left}px`;
-      entry.overlay.style.height = `${bottom - top}px`;
+      if (isDocumentPositioned) {
+        const docRect = entry.documentRect || {
+          top: rect.top + scrollY,
+          left: rect.left + scrollX,
+          width: rect.width,
+          height: rect.height
+        };
+        entry.overlay.style.top = `${docRect.top}px`;
+        entry.overlay.style.left = `${docRect.left}px`;
+        entry.overlay.style.width = `${docRect.width}px`;
+        entry.overlay.style.height = `${docRect.height}px`;
+
+        const clipTop = Math.max(0, visibleTop - rect.top);
+        const clipRight = Math.max(0, rect.right - visibleRight);
+        const clipBottom = Math.max(0, rect.bottom - visibleBottom);
+        const clipLeft = Math.max(0, visibleLeft - rect.left);
+        entry.overlay.style.clipPath =
+          clipTop || clipRight || clipBottom || clipLeft
+            ? `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)`
+            : "";
+        continue;
+      }
+
+      // Clamp fixed overlays under sticky headers and within the viewport.
+      entry.overlay.style.clipPath = "";
+      entry.overlay.style.top    = `${visibleTop}px`;
+      entry.overlay.style.left   = `${visibleLeft}px`;
+      entry.overlay.style.width  = `${visibleRight - visibleLeft}px`;
+      entry.overlay.style.height = `${visibleBottom - visibleTop}px`;
     }
   },
 
@@ -1458,6 +1518,7 @@ const ToxicGuard = {
     if (!commentEl?.matches?.("shreddit-comment")) return [];
 
     const selectors = [
+      "[slot='commentMeta']",
       "[slot='commentAuthor']",
       "[slot='commentAvatar']",
       "[slot='authorFlair']",
@@ -1619,6 +1680,7 @@ const ToxicGuard = {
       metaEls,
       anchorEls,
       overlayPadding: 4,
+      positionMode: "document",
       isHardBlock,
       sourceText: currentText
     };
