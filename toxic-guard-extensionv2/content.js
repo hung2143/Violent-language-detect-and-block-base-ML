@@ -384,6 +384,15 @@ const ToxicGuard = {
         continue;
       }
 
+      if (
+        entry.rootEl?.matches?.("shreddit-comment") &&
+        !this._isRedditCommentPainted(entry.rootEl, el)
+      ) {
+        this._removePageOverlayEntry(entry, true);
+        this._resetRedditRootScan(entry.rootEl, this._findRedditCommentBody(entry.rootEl));
+        continue;
+      }
+
       let rect = el.getBoundingClientRect();
       if (Array.isArray(entry.anchorEls) && entry.anchorEls.length) {
         const anchorRects = entry.anchorEls
@@ -528,6 +537,7 @@ const ToxicGuard = {
 
         const bodyEl = this._findRedditCommentBody(commentEl);
         if (!bodyEl || bodyEl.dataset.tgScanned || bodyEl.dataset.tgBlurred) return;
+        if (!this._isRedditCommentPainted(commentEl, bodyEl)) return;
 
         const text = (bodyEl.innerText || bodyEl.textContent || "").trim().replace(/\s+/g, " ");
         if (text.length < 4 || text.length > 400) return;
@@ -712,6 +722,43 @@ const ToxicGuard = {
       return this._findComposedAncestor(el, SEMANTIC_ROOT_SELECTOR);
     } catch {
       return null;
+    }
+  },
+
+  _isRedditCommentPainted(commentEl, bodyEl) {
+    if (!commentEl?.matches?.("shreddit-comment") || !bodyEl) return false;
+    if (this._findComposedAncestor(bodyEl, "shreddit-comment") !== commentEl) return false;
+    if (typeof document.elementsFromPoint !== "function" || typeof window === "undefined") return true;
+
+    try {
+      const rect = bodyEl.getBoundingClientRect();
+      if (rect.width <= 1 || rect.height <= 1) return false;
+
+      const visibleLeft = Math.max(0, rect.left);
+      const visibleTop = Math.max(0, rect.top);
+      const visibleRight = Math.min(window.innerWidth, rect.right);
+      const visibleBottom = Math.min(window.innerHeight, rect.bottom);
+
+      // Off-screen comments cannot be hit-tested yet. They will be checked
+      // again by updatePageOverlays as soon as they enter the viewport.
+      if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return true;
+
+      const insetX = Math.min(24, (visibleRight - visibleLeft) / 4);
+      const y = visibleTop + (visibleBottom - visibleTop) / 2;
+      const points = [
+        [visibleLeft + insetX, y],
+        [visibleLeft + (visibleRight - visibleLeft) / 2, y],
+        [visibleRight - insetX, y]
+      ];
+
+      return points.some(([x, pointY]) => {
+        return document.elementsFromPoint(x, pointY).some((node) => {
+          if (node?.closest?.("[data-tg-overlay]")) return false;
+          return this._findComposedAncestor(node, "shreddit-comment") === commentEl;
+        });
+      });
+    } catch {
+      return true;
     }
   },
 
@@ -1515,6 +1562,11 @@ const ToxicGuard = {
     );
     if (!blurTarget) {
       console.warn("[ToxicGuard] Skip unsafe Reddit blur target containing replies");
+      return;
+    }
+    if (!this._isRedditCommentPainted(overlayRoot, blurTarget)) {
+      this._resetRedditRootScan(overlayRoot, blurTarget);
+      console.log("[ToxicGuard] Skip occluded Reddit comment with a misleading layout rect");
       return;
     }
     const currentText = this._normalizeContentText(blurTarget.innerText || blurTarget.textContent || "");

@@ -31,6 +31,12 @@ Backend/out.txt
 Backend/stdout.txt
 Backend/stderr.txt
 
+# Local debugging probes
+/.tmp-*
+
+# Local extension tests
+/toxic-guard-extensionv2/tests/
+
 # Browser extension build/signing artifacts
 *.crx
 *.pem
