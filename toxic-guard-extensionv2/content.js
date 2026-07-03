@@ -630,6 +630,8 @@ const ToxicGuard = {
       "[data-testid='track-item']",
       ".Track-container",
       ".track-item",
+      // Generic comment/message bodies used by forums and smaller apps
+      this._genericCommentBodySelector(),
     ].join(",");
 
     try {
@@ -757,6 +759,81 @@ const ToxicGuard = {
     return /(^|\.)reddit\.com$/i.test(hostname);
   },
 
+  _genericCommentContainerSelector() {
+    return [
+      "[data-comment-id]",
+      "[data-commentid]",
+      "[data-comment]",
+      "[data-testid='comment']",
+      "[data-testid='comment-card']",
+      "[data-testid='comment-item']",
+      "[data-testid='message']",
+      "[data-testid='message-card']",
+      "[itemprop='comment']",
+      "[itemtype*='Comment']",
+      ".comment",
+      ".comment-container",
+      ".comment-card",
+      ".comment-item",
+      ".reply",
+      ".reply-container",
+      ".reply-card",
+      ".reply-item",
+      ".message",
+      ".message-card",
+      ".message-item",
+      ".post-card"
+    ].join(",");
+  },
+
+  _genericCommentBodySelector() {
+    return [
+      "[data-comment-body]",
+      "[data-comment-text]",
+      "[data-message-body]",
+      "[data-message-text]",
+      "[data-testid='comment-body']",
+      "[data-testid='comment-content']",
+      "[data-testid='comment-text']",
+      "[data-testid='message-body']",
+      "[data-testid='message-content']",
+      "[data-testid='message-text']",
+      "[itemprop='text']",
+      ".comment-body",
+      ".comment-content",
+      ".comment-text",
+      ".message-body",
+      ".message-content",
+      ".message-text",
+      ".post-body",
+      ".post-content"
+    ].join(",");
+  },
+
+  _genericIdentitySelector() {
+    return [
+      "img",
+      "[role='img']",
+      "a[href*='/@']",
+      "a[href*='/user']",
+      "a[href*='/profile']",
+      "a[rel='author']",
+      "[itemprop='author']",
+      "[data-author]",
+      "[data-user]",
+      ".author",
+      ".username",
+      ".user-name",
+      ".display-name",
+      ".profile-name",
+      ".avatar",
+      "time",
+      "[datetime]",
+      "strong",
+      "b"
+    ].join(",");
+  },
+
   _findSemanticRoot(el) {
     if (!el) return null;
 
@@ -777,11 +854,13 @@ const ToxicGuard = {
       "ytd-compact-video-renderer",
       "ytd-rich-item-renderer",
       "ytd-grid-video-renderer",
-      "article",
+      "article"
     ].join(",");
 
     try {
-      return this._findComposedAncestor(el, SEMANTIC_ROOT_SELECTOR);
+      const knownRoot = this._findComposedAncestor(el, SEMANTIC_ROOT_SELECTOR);
+      if (knownRoot) return knownRoot;
+      return this._findComposedAncestor(el, this._genericCommentContainerSelector());
     } catch {
       return null;
     }
@@ -1011,6 +1090,7 @@ const ToxicGuard = {
       ".MUxGbd",
       ".g",
     ];
+    const GENERIC_CONTAINER_SELECTOR = this._genericCommentContainerSelector();
 
     // Các selector dùng để nhận diện container là LIST/FEED chứa nhiều thẻ
     const LIST_SELECTORS = [
@@ -1098,8 +1178,17 @@ const ToxicGuard = {
       }
     }
 
-    // Ưu tiên 2: container nhỏ nhất (closest ancestor) có cả media lẫn text,
-    // và KHÔNG phải là list/feed
+    // Generic fallback for unknown forums/apps. Known selectors above keep priority.
+    for (const node of ancestors) {
+      if (!node || node === document.body || node === document.documentElement) break;
+      try {
+        if (node.matches?.(GENERIC_CONTAINER_SELECTOR)) {
+          return keepInsideSemanticRoot(this._narrowToOwnContent(node, el));
+        }
+      } catch { /* */ }
+    }
+
+    // Fallback: closest reasonable block/media container.
     let candidateMedia = null;
     let candidateFallback = null;
 
@@ -1716,10 +1805,34 @@ const ToxicGuard = {
     const bodyRect = el.getBoundingClientRect();
     const bodyText = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
     const bodyPrefix = bodyText.slice(0, Math.min(48, bodyText.length));
+    const genericCommentContainerSelector = this._genericCommentContainerSelector();
+    const genericIdentitySelector = this._genericIdentitySelector();
     const hasExternalIdentity = (node) => {
       try {
-        return Array.from(node.querySelectorAll("img, [role='img'], a[href*='/@'], a[href*='/user'], a[href*='/profile'], time, [datetime], strong, b"))
+        const identityEls = [
+          ...(node.matches?.(genericIdentitySelector) ? [node] : []),
+          ...Array.from(node.querySelectorAll(genericIdentitySelector))
+        ];
+        return identityEls
           .some((identityEl) => !el.contains(identityEl));
+      } catch {
+        return false;
+      }
+    };
+    const hasNestedGenericCommentAfterBody = (node) => {
+      try {
+        return Array.from(node.querySelectorAll(genericCommentContainerSelector)).some((child) => {
+          if (!child || child === node || child.contains?.(el) || el.contains?.(child)) return false;
+          const text = (child.innerText || child.textContent || "").trim().replace(/\s+/g, " ");
+          if (text.length < 4) return false;
+          const r = child.getBoundingClientRect();
+          return (
+            r.width >= 120 &&
+            r.height >= 32 &&
+            r.top >= bodyRect.bottom - 8 &&
+            r.bottom > bodyRect.bottom + 8
+          );
+        });
       } catch {
         return false;
       }
@@ -1738,19 +1851,23 @@ const ToxicGuard = {
         .replace(/[·•]/g, " ")
         .trim();
       const hasNestedAfterBody =
-        trailingWithoutActions.length > 24 &&
-        /(?:^|\s)@?[\p{L}\p{N}._-]{2,40}\s+\d{1,2}\/\d{1,2}\/\d{2,4}\b/u.test(trailingWithoutActions);
+        (
+          trailingWithoutActions.length > 24 &&
+          /(?:^|\s)@?[\p{L}\p{N}._-]{2,40}\s+\d{1,2}\/\d{1,2}\/\d{2,4}\b/u.test(trailingWithoutActions)
+        ) ||
+        hasNestedGenericCommentAfterBody(current);
       const hasHeaderBeforeBody =
         bodyIndex > 0 &&
         bodyIndex <= 140 &&
         text.length <= Math.max(120, bodyText.length + 260);
       const hasActions = !!current.querySelector?.(
-        "button, [role='button'], svg, [aria-label*='reply' i], [aria-label*='like' i], [aria-label*='share' i]"
+        "button, [role='button'], svg, [aria-label*='reply' i], [aria-label*='respond' i], [aria-label*='like' i], [aria-label*='share' i]"
       );
       const isSemanticCard =
         tag === "ARTICLE" ||
         role === "article" ||
-        current.matches?.(".comment, .comment-container, [data-testid='tweet'], [data-testid='cellInnerDiv'], [data-pressable-container='true']");
+        current.matches?.(".comment, .comment-container, [data-testid='tweet'], [data-testid='cellInnerDiv'], [data-pressable-container='true']") ||
+        current.matches?.(genericCommentContainerSelector);
       const reasonable =
         rect.width >= 180 &&
         rect.height >= 48 &&
@@ -1911,7 +2028,7 @@ const ToxicGuard = {
     try {
       const found = new Set();
       Array.from(searchRoot.querySelectorAll(selector)).forEach((node) => {
-        if (!(node instanceof HTMLElement)) return;
+        if (!node || typeof node.getBoundingClientRect !== "function") return;
         if (bodyEl.contains(node) || node.contains(bodyEl) || node.closest?.("[data-tg-overlay]")) return;
         if (!isIdentityLike(node)) return;
 
