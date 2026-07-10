@@ -146,23 +146,27 @@
           </div>
         </div>
 
-        <p class="card-copy">Các domain trong danh sách này sẽ không bị quét. Nhập mỗi dòng một domain để dễ quản lý.</p>
+        <p class="card-copy">Thêm website bạn muốn Toxic Guard bỏ qua khi quét nội dung.</p>
 
-        <textarea
-          id="whitelist"
-          rows="7"
-          placeholder="facebook.com&#10;reddit.com&#10;twitter.com"
-          autocomplete="off"
-          spellcheck="false"
-        ></textarea>
+        <form class="whitelist-add-form" id="whitelistAddForm">
+          <input
+            type="text"
+            id="whitelistDomain"
+            placeholder="Ví dụ: youtube.com"
+            aria-label="Domain cần thêm vào whitelist"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn-secondary whitelist-add-button" type="submit">Thêm</button>
+        </form>
 
-        <div class="helper-row">
-          <div class="field-hint">Chỉ nhập hostname hoặc domain, ví dụ `facebook.com`, không cần `https://`.</div>
+        <div class="field-hint">Chỉ cần nhập hostname hoặc domain, không bắt buộc có <code>https://</code>.</div>
+
+        <div class="whitelist-list-head">
+          <span>Website đã thêm</span>
           <span class="helper-accent" id="whitelistCountInline">0 website</span>
         </div>
-
-        <button class="btn-secondary" id="resetWhitelistBtn">Khôi phục nội dung đang lưu</button>
-        <button class="btn-primary" id="saveWhitelistBtn">Lưu whitelist</button>
+        <div class="whitelist-list" id="whitelistList" aria-live="polite"></div>
       </section>
     </div>
 

@@ -138,11 +138,16 @@ function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function parseWhitelist(rawValue) {
-  return rawValue
-    .split(/\r?\n|,/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+function normalizeWhitelistDomain(rawValue) {
+  const value = rawValue.trim().toLowerCase();
+  if (!value || /\s/.test(value)) return "";
+
+  try {
+    const url = new URL(value.includes("://") ? value : `https://${value}`);
+    return url.hostname.replace(/\.$/, "");
+  } catch {
+    return "";
+  }
 }
 
 function formatWhitelistCount(value) {
@@ -227,8 +232,7 @@ async function refreshCurrentPageStats() {
   updateCurrentPageStats(backgroundStats?.ok ? backgroundStats : directStats);
 }
 
-function updateWhitelistSummary(rawValue) {
-  const whitelist = parseWhitelist(rawValue);
+function updateWhitelistSummary(whitelist) {
   const label = formatWhitelistCount(whitelist.length);
   $("whitelistCountText").textContent = label;
   $("whitelistCountInline").textContent = label;
@@ -286,9 +290,38 @@ function applyResult(action, label, target) {
   content.classList.remove("hidden");
 }
 
-function fillWhitelist(whitelist) {
-  $("whitelist").value = Array.isArray(whitelist) ? whitelist.join("\n") : "";
-  updateWhitelistSummary($("whitelist").value);
+function renderWhitelist(whitelist) {
+  const list = $("whitelistList");
+  list.replaceChildren();
+
+  if (whitelist.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "whitelist-empty";
+    empty.textContent = "Chưa có website nào trong whitelist.";
+    list.appendChild(empty);
+  } else {
+    whitelist.forEach((domain, index) => {
+      const item = document.createElement("div");
+      item.className = "whitelist-item";
+
+      const domainLabel = document.createElement("span");
+      domainLabel.className = "whitelist-domain";
+      domainLabel.textContent = domain;
+      domainLabel.title = domain;
+
+      const removeButton = document.createElement("button");
+      removeButton.className = "whitelist-remove";
+      removeButton.type = "button";
+      removeButton.dataset.whitelistIndex = String(index);
+      removeButton.setAttribute("aria-label", `Xóa ${domain} khỏi whitelist`);
+      removeButton.textContent = "×";
+
+      item.append(domainLabel, removeButton);
+      list.appendChild(item);
+    });
+  }
+
+  updateWhitelistSummary(whitelist);
 }
 
 function initTabs() {
@@ -315,14 +348,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   const enabledToggle = $("enabledToggle");
   const realtimeScanInput = $("realtimeScan");
   const submitScanInput = $("submitScan");
-  const whitelistInput = $("whitelist");
+  const whitelistDomainInput = $("whitelistDomain");
   const quickTextInput = $("quickText");
   const checkBtn = $("checkBtn");
+  let whitelistDraft = Array.isArray(settings.whitelist) ? [...new Set(settings.whitelist)] : [];
 
   enabledToggle.checked = settings.enabled;
   realtimeScanInput.checked = settings.realtimeScan ?? true;
   submitScanInput.checked = settings.submitScan ?? true;
-  fillWhitelist(settings.whitelist);
+  renderWhitelist(whitelistDraft);
 
   applyEnabled(settings.enabled);
   updateApiSummary(settings.apiUrl || "");
@@ -345,25 +379,56 @@ document.addEventListener("DOMContentLoaded", async () => {
     updateDetectionSummary(realtimeScanInput.checked, submitScanInput.checked);
   });
 
-  whitelistInput.addEventListener("input", () => {
-    updateWhitelistSummary(whitelistInput.value);
+  $("whitelistAddForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const domain = normalizeWhitelistDomain(whitelistDomainInput.value);
+
+    if (!domain) {
+      toast("Domain không hợp lệ", false);
+      whitelistDomainInput.focus();
+      return;
+    }
+
+    if (whitelistDraft.includes(domain)) {
+      toast("Website này đã có trong whitelist", false);
+      whitelistDomainInput.select();
+      return;
+    }
+
+    const nextWhitelist = [...whitelistDraft, domain];
+    const result = await msg({ type: "SET_SETTINGS", payload: { whitelist: nextWhitelist } });
+    if (!result?.ok) {
+      toast("Không thể thêm website", false);
+      return;
+    }
+
+    whitelistDraft = nextWhitelist;
+    renderWhitelist(whitelistDraft);
+    whitelistDomainInput.value = "";
+    whitelistDomainInput.focus();
+    toast(`Đã thêm ${domain}`);
+  });
+
+  $("whitelistList").addEventListener("click", async (event) => {
+    const removeButton = event.target.closest("[data-whitelist-index]");
+    if (!removeButton) return;
+
+    const index = Number(removeButton.dataset.whitelistIndex);
+    const removedDomain = whitelistDraft[index];
+    const nextWhitelist = whitelistDraft.filter((_, itemIndex) => itemIndex !== index);
+    const result = await msg({ type: "SET_SETTINGS", payload: { whitelist: nextWhitelist } });
+    if (!result?.ok) {
+      toast("Không thể xóa website", false);
+      return;
+    }
+
+    whitelistDraft = nextWhitelist;
+    renderWhitelist(whitelistDraft);
+    toast(`Đã xóa ${removedDomain}`);
   });
 
   quickTextInput.addEventListener("input", () => {
     $("quickTextCount").textContent = `${quickTextInput.value.length} ký tự`;
-  });
-
-  $("resetWhitelistBtn").addEventListener("click", async () => {
-    const currentSettings = await msg({ type: "GET_SETTINGS" });
-    fillWhitelist(currentSettings.whitelist);
-    toast("Đã khôi phục nội dung đang lưu");
-  });
-
-  $("saveWhitelistBtn").addEventListener("click", async () => {
-    const whitelist = parseWhitelist(whitelistInput.value);
-    await msg({ type: "SET_SETTINGS", payload: { whitelist } });
-    fillWhitelist(whitelist);
-    toast("Đã cập nhật whitelist");
   });
 
   $("saveDetectionBtn").addEventListener("click", async () => {
